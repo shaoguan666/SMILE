@@ -1,0 +1,179 @@
+{
+  "registry_version": "bibm_audit_fixed_v1",
+  "selection_rule": "delta > 0.5",
+  "split": "train",
+  "split_seed": 42,
+  "tasks": {
+    "c12": {
+      "registry_fingerprint": "f8a2f1fe4d8df692",
+      "selected_groups": {
+        "Vital_NonInvasive": [
+          21,
+          22,
+          23
+        ],
+        "Vital_Invasive": [
+          8,
+          18,
+          30
+        ],
+        "Liver_Enzyme": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "Blood_Gas": [
+          9,
+          24,
+          25,
+          26
+        ],
+        "CBC": [
+          13,
+          27,
+          35
+        ],
+        "Electrolyte": [
+          15,
+          17,
+          20,
+          12
+        ]
+      },
+      "delta_by_group": {
+        "Vital_NonInvasive": 1.184117962661051,
+        "Vital_Invasive": 0.8766831742821896,
+        "Liver_Enzyme": 0.7221169629553615,
+        "Blood_Gas": 0.665095981570238,
+        "CBC": 0.5522601325177554,
+        "Electrolyte": 0.5509054406851976,
+        "Renal": 0.16812166691412267,
+        "Vital_Basic": -0.06353396784140068,
+        "Cardiac_Biomarker": -0.16213536256108638
+      }
+    },
+    "c19": {
+      "registry_fingerprint": "83499e7897da8c1b",
+      "selected_groups": {
+        "Liver_Enzyme": [
+          14,
+          16
+        ],
+        "Renal": [
+          15,
+          19
+        ],
+        "CBC": [
+          28,
+          29,
+          31,
+          33
+        ]
+      },
+      "delta_by_group": {
+        "Liver_Enzyme": 0.8657978809745321,
+        "Renal": 0.5741176232498765,
+        "CBC": 0.5283572126207717,
+        "Vital_Basic": 0.43090488518304465,
+        "Resp_Gas": 0.26627346995746426,
+        "Bilirubin": 0.22314631833924148,
+        "Coagulation": 0.1541956402595157,
+        "Electrolyte": 0.12222084252145948
+      }
+    },
+    "mimic_mortality": {
+      "registry_fingerprint": "768f11522014e188",
+      "selected_groups": {
+        "GCS": [
+          3,
+          4,
+          5,
+          6
+        ],
+        "Vital_BP": [
+          1,
+          10,
+          13
+        ]
+      },
+      "delta_by_group": {
+        "GCS": 0.7047836575452381,
+        "Vital_BP": 0.6957954688601025,
+        "Anthropometric": 0.44819813823493265,
+        "Resp_Gas": 0.19406405315712183,
+        "Vital_Basic": 0.08459810593480166
+      }
+    },
+    "mimic_decompensation": {
+      "registry_fingerprint": "768f11522014e188",
+      "selected_groups": {
+        "Vital_BP": [
+          1,
+          10,
+          13
+        ],
+        "GCS": [
+          3,
+          4,
+          5,
+          6
+        ]
+      },
+      "delta_by_group": {
+        "Vital_BP": 0.7185642636712154,
+        "GCS": 0.6603168502565331,
+        "Anthropometric": 0.44974898618856085,
+        "Resp_Gas": 0.2942023432194409,
+        "Vital_Basic": 0.10924154428411853
+      }
+    },
+    "mimic_phenotyping": {
+      "registry_fingerprint": "768f11522014e188",
+      "selected_groups": {
+        "Vital_BP": [
+          1,
+          10,
+          13
+        ],
+        "GCS": [
+          3,
+          4,
+          5,
+          6
+        ]
+      },
+      "delta_by_group": {
+        "Vital_BP": 0.6512123348374799,
+        "GCS": 0.6469099645061428,
+        "Anthropometric": 0.4457013353462605,
+        "Resp_Gas": 0.21308182553327376,
+        "Vital_Basic": 0.11286593441457449
+      }
+    },
+    "mimic_lengthofstay": {
+      "registry_fingerprint": "768f11522014e188",
+      "selected_groups": {
+        "Vital_BP": [
+          1,
+          10,
+          13
+        ],
+        "GCS": [
+          3,
+          4,
+          5,
+          6
+        ]
+      },
+      "delta_by_group": {
+        "Vital_BP": 0.7434779352021765,
+        "GCS": 0.6916354333399081,
+        "Anthropometric": 0.444364308124461,
+        "Resp_Gas": 0.2561699569597438,
+        "Vital_Basic": 0.10390527468662944
+      }
+    }
+  }
+}

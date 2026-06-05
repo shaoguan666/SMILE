@@ -98,7 +98,8 @@ python run_all_experiments.py \
 One-off pretraining and finetuning:
 
 ```bash
-python main_pretrain.py --dataset c12 --use-smile-lean
+python main_pretrain.py --dataset c12 --use-smile-lean \
+  --mask-group-config experiments/bibm_smile/configs/selected_mask_groups.json
 python main_finetune.py --dataset c12 --use-smile-lean
 ```
 

@@ -19,7 +19,7 @@
     "run_tag": "aaai_release",
     "output_root": "./export/aaai_release",
     "results_root": "./experiments/bibm_smile/results/aaai_release",
-    "mask_group_config": "analysis/results/bibm_audit_fixed/selected_mask_groups.json",
+    "mask_group_config": "experiments/bibm_smile/configs/selected_mask_groups.json",
     "split": "train",
     "split_seed": 42,
     "selection_rule": "delta > 0.5"

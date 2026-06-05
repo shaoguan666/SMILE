@@ -1,0 +1,52 @@
+# Python caches and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.venv/
+venv/
+env/
+
+# Local editor/tool state
+.idea/
+.vscode/
+.omc/
+
+# Data archives, raw data, and processed dataset artifacts
+data.zip
+data/**/*.pkl
+data/**/stat.pkl
+data/**/raw/
+data/**/raw/**
+data/**/*.csv
+data/**/*.psv
+data/**/*.tsv
+data/**/Outcomes-*.txt
+data/resources/valset.csv
+SMART/data/
+
+# Generated experiment outputs
+export/
+logs/
+figs/
+analysis/results/
+experiments/**/results/
+
+# Model artifacts and logs
+*.pth
+*.pt
+*.ckpt
+*.log
+*.out
+*.err
+
+# Notebook output-heavy preprocessing scratch files
+*.ipynb
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db

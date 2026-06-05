@@ -1,0 +1,38 @@
+{
+  "seeds": [1, 42, 3407],
+  "datasets": [
+    "c12",
+    "c19",
+    "mimic_mortality",
+    "mimic_decompensation",
+    "mimic_phenotyping",
+    "mimic_lengthofstay"
+  ],
+  "implemented_variants": {
+    "Backbone": "smart",
+    "SMILE-Full": "smart-smile-lean",
+    "SMILE w/o Density": "smart-smile-lean-no-density",
+    "SMILE w/o CoMiss Bias": "smart-smile-lean-no-mnar-bias",
+    "SMILE w/o Time-Affine": "smart-smile-lean-no-film"
+  },
+  "revision_defaults": {
+    "run_tag": "aaai_release",
+    "output_root": "./export/aaai_release",
+    "results_root": "./experiments/bibm_smile/results/aaai_release",
+    "mask_group_config": "analysis/results/bibm_audit_fixed/selected_mask_groups.json",
+    "split": "train",
+    "split_seed": 42,
+    "selection_rule": "delta > 0.5"
+  },
+  "runner_defaults": {
+    "pretrain_epochs": 25,
+    "finetune_epochs": 25,
+    "batch_size": 64,
+    "lr": 0.001,
+    "optimizer": "Adam",
+    "scheduler": "CosineAnnealingLR",
+    "selection_binary": "validation AUPRC",
+    "selection_phenotyping": "validation macro-AUROC",
+    "selection_lengthofstay": "configured AUROC protocol"
+  }
+}

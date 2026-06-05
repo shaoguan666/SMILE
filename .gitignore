@@ -29,7 +29,7 @@ data/resources/valset.csv
 SMART/data/
 
 # Generated experiment outputs
-export/
+
 logs/
 figs/
 analysis/results/

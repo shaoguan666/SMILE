@@ -1,0 +1,22 @@
+{
+  "checkpoint": "checkpoint-prc.pth",
+  "checkpoint_epoch": 24,
+  "val_optimal_threshold": 0.1111031025648117,
+  "val_best_f1": 0.25901201115185185,
+  "test_default_threshold": {
+    "auroc": 0.8464187174236808,
+    "auprc": 0.20616861271085873,
+    "f1": 0.04040403992931334,
+    "prec": 0.8333333326388889,
+    "rec": 0.020703933746983354,
+    "threshold": 0.5
+  },
+  "test_optimal_threshold": {
+    "auroc": 0.8464187174236808,
+    "auprc": 0.20616861271085873,
+    "f1": 0.23415977515428524,
+    "prec": 0.3497942386687327,
+    "rec": 0.17598343684935852,
+    "threshold": 0.1111031025648117
+  }
+}

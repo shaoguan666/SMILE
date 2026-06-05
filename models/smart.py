@@ -1033,9 +1033,10 @@ class MNARCooccurrenceEncoder(nn.Module):
 class MNARBiasVarAttention(nn.Module):
     """VarAttention augmented with MNAR co-occurrence attention bias.
 
-    Adds a learnable per-head scalar scaling of the (B, V, V) MNAR co-occurrence
-    matrix to the attention logits before softmax.  Variables that co-miss share
-    physiological state and should attend to each other more strongly.
+    Adds a learnable scaling of the (B, V, V) MNAR co-occurrence matrix to the
+    attention logits before softmax.  By default this is a per-head scalar.  When
+    num_vars is supplied, it uses the original SMILE-Lean per-head/per-pair scale
+    so ablations can remove FiLM without changing the co-missingness pathway.
 
     mnar_bias_scale is zero-initialized: at init this is identical to VarAttention.
 
@@ -1046,16 +1047,22 @@ class MNARBiasVarAttention(nn.Module):
         proj_drop: Dropout on output projection.
     """
 
-    def __init__(self, dim, num_heads=8, qkv_bias=False, proj_drop=0.):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, proj_drop=0.,
+                 num_vars=None):
         super().__init__()
         assert dim % num_heads == 0
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
+        self.num_vars = num_vars
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-        # Per-head MNAR co-occurrence bias scale (zero-init = no bias at init)
-        self.mnar_bias_scale = nn.Parameter(torch.zeros(num_heads))
+        # Zero-init = no MNAR bias at init.  num_vars preserves the original
+        # SMILE-Lean edge-specific scale used by the full model.
+        if num_vars is None:
+            self.mnar_bias_scale = nn.Parameter(torch.zeros(num_heads))
+        else:
+            self.mnar_bias_scale = nn.Parameter(torch.zeros(num_heads, num_vars, num_vars))
 
     def forward(self, x, mask, lens, lens_mask, mnar_cooccur=None, time_decay=None):
         B, N, P, C = x.shape
@@ -1072,7 +1079,10 @@ class MNARBiasVarAttention(nn.Module):
         # Build additive attention bias from MNAR co-occurrence
         attn_mask = None
         if mnar_cooccur is not None:
-            scale = self.mnar_bias_scale.view(1, -1, 1, 1)
+            if self.mnar_bias_scale.dim() == 1:
+                scale = self.mnar_bias_scale.view(1, -1, 1, 1)
+            else:
+                scale = self.mnar_bias_scale.unsqueeze(0)
             if time_decay is not None:
                 # time_decay: (B, num_heads) -- per-sample per-head temporal scaling
                 scale = scale * time_decay.view(B, -1, 1, 1)
@@ -1091,11 +1101,12 @@ class MNARBiasVarAttBlock(nn.Module):
     """VarAttBlock using MNARBiasVarAttention."""
 
     def __init__(self, dim, num_heads, qkv_bias=False, proj_drop=0.,
-                 norm_layer=nn.LayerNorm):
+                 norm_layer=nn.LayerNorm, num_vars=None):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn_var = MNARBiasVarAttention(
-            dim, num_heads=num_heads, qkv_bias=qkv_bias, proj_drop=proj_drop
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, proj_drop=proj_drop,
+            num_vars=num_vars,
         )
 
     def forward(self, x, mask, lens, lens_mask, mnar_cooccur=None):
@@ -1395,14 +1406,16 @@ class MNARBiasFiLMVarAttBlock(nn.Module):
     """
 
     def __init__(self, dim, num_heads, time_dim, qkv_bias=False, proj_drop=0.,
-                 norm_layer=nn.LayerNorm, use_time_mnar=False, use_film=True):
+                 norm_layer=nn.LayerNorm, use_time_mnar=False, use_film=True,
+                 num_vars=None):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.num_heads = num_heads
         self.use_time_mnar = use_time_mnar
         self.use_film = use_film
         self.attn_var = MNARBiasVarAttention(
-            dim, num_heads=num_heads, qkv_bias=qkv_bias, proj_drop=proj_drop
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, proj_drop=proj_drop,
+            num_vars=num_vars,
         )
         if use_film:
             # Post-attention FiLM: time_enc -> (gamma, beta) over dim; zero-init = identity
@@ -1500,7 +1513,8 @@ class SMILELeanBasicBlock(nn.Module):
 
     def __init__(self, dim, num_heads, time_dim, mlp_ratio=4., qkv_bias=False,
                  proj_drop=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm,
-                 abl_no_film=False, abl_no_mnar_bias=False, abl_no_time_mnar=False):
+                 abl_no_film=False, abl_no_mnar_bias=False, abl_no_time_mnar=False,
+                 num_vars=None):
         super().__init__()
         self.abl_no_film = abl_no_film
         self.abl_no_mnar_bias = abl_no_mnar_bias
@@ -1516,6 +1530,7 @@ class SMILELeanBasicBlock(nn.Module):
             qkv_bias=qkv_bias, proj_drop=proj_drop, norm_layer=norm_layer,
             use_time_mnar=self.use_time_mnar,
             use_film=self.use_film,
+            num_vars=num_vars,
         )
         self.mlp = MLPBlock(
             dim=dim, mlp_ratio=mlp_ratio,
@@ -1672,6 +1687,7 @@ class SMILELeanEncoder(nn.Module):
     Keeps / improves vs. original SMILELean:
       - MNARCooccurrenceEncoder           -- zero-param co-occurrence bias
       - MNARBiasFiLMVarAttBlock           -- MNAR bias + FiLM + time-dynamic MNAR scale
+                                               using the original per-pair bias scale
       - DensityMLPEmbedder                -- density as 3rd input feature (not additive)
       - TimeEncoder (dual-track PE)       -- physical time added to x after index PE
       - PositionalEncoding                -- sequence-index sinusoidal PE
@@ -1720,6 +1736,7 @@ class SMILELeanEncoder(nn.Module):
                 abl_no_film=self.abl_no_film,
                 abl_no_mnar_bias=self.abl_no_mnar_bias,
                 abl_no_time_mnar=self.abl_no_time_mnar,
+                num_vars=args.input_dim,
             )
             for _ in range(args.e_layers)
         ])

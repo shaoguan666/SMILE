@@ -1,4 +1,5 @@
 import argparse
+from collections import OrderedDict
 import json
 import os
 import logging
@@ -80,6 +81,15 @@ def _best_f1_threshold(y_true, probs):
     return float(thresholds[idx]), float(f1s[idx])
 
 
+def _best_minpse_threshold(y_true, probs):
+    precisions, recalls, thresholds = sk_metrics.precision_recall_curve(y_true, probs)
+    if len(thresholds) == 0:
+        return 0.5, 0.0
+    minpse = np.minimum(precisions[:-1], recalls[:-1])
+    idx = int(np.argmax(minpse))
+    return float(thresholds[idx]), float(minpse[idx])
+
+
 def _binary_metrics_at_threshold(y_true, preds, threshold):
     probs = np.asarray(preds)[:, 1]
     y = np.asarray(y_true)
@@ -90,7 +100,7 @@ def _binary_metrics_at_threshold(y_true, preds, threshold):
     auroc = sk_metrics.roc_auc_score(y, probs)
     precision_curve, recall_curve, _ = sk_metrics.precision_recall_curve(y, probs)
     auprc = sk_metrics.auc(recall_curve, precision_curve)
-    minpse = np.max([min(p, r) for p, r in zip(precision_curve, recall_curve)])
+    minpse = min(precision, recall)
     return {
         "auroc": float(auroc),
         "auprc": float(auprc),
@@ -102,12 +112,52 @@ def _binary_metrics_at_threshold(y_true, preds, threshold):
     }
 
 
+def _load_model_state_dict(model, state_dict, allow_unused_mnar_bias_mismatch=False):
+    """Load weights across DDP prefixes while permitting only disabled legacy CoMiss scales."""
+    target_state = model.state_dict()
+    source_has_module = any(key.startswith("module.") for key in state_dict)
+    target_has_module = any(key.startswith("module.") for key in target_state)
+    aligned_state = OrderedDict()
+    for key, value in state_dict.items():
+        if source_has_module and not target_has_module and key.startswith("module."):
+            aligned_key = key[len("module."):]
+        elif target_has_module and not source_has_module:
+            aligned_key = "module." + key
+        else:
+            aligned_key = key
+        aligned_state[aligned_key] = value
+
+    ignored = []
+    for key in list(aligned_state):
+        if key not in target_state or aligned_state[key].shape == target_state[key].shape:
+            continue
+        if allow_unused_mnar_bias_mismatch and key.endswith("mnar_bias_scale"):
+            ignored.append(key)
+            del aligned_state[key]
+
+    incompatible = model.load_state_dict(aligned_state, strict=False)
+    unexpected = list(incompatible.unexpected_keys)
+    missing = [key for key in incompatible.missing_keys if key not in ignored]
+    if missing or unexpected:
+        raise RuntimeError(
+            "Checkpoint is incompatible with the requested encoder. "
+            f"Missing keys: {missing}; unexpected keys: {unexpected}"
+        )
+    return ignored
+
+
 def test(args, checkpoint_path, test_dataloader, val_dataloader=None):
     checkpoint = torch.load(os.path.join(args.save_dir, checkpoint_path), weights_only=False)
     save_epoch = checkpoint['epoch']
     log(logger, "last saved model is in epoch {}".format(save_epoch))
-    encoder.load_state_dict(checkpoint['encoder'])
-    classifier.load_state_dict(checkpoint['classifier'])
+    ignored = _load_model_state_dict(
+        encoder,
+        checkpoint['encoder'],
+        allow_unused_mnar_bias_mismatch=args.abl_no_mnar_bias,
+    )
+    if ignored:
+        log(logger, "Ignored disabled legacy CoMiss parameters: {}".format(", ".join(ignored)))
+    _load_model_state_dict(classifier, checkpoint['classifier'])
     encoder.eval()
     classifier.eval()
     labels_all, preds_all, test_loss = _collect_predictions(args, test_dataloader)
@@ -116,11 +166,29 @@ def test(args, checkpoint_path, test_dataloader, val_dataloader=None):
     if args.num_class == 2 and val_dataloader is not None:
         val_labels, val_preds, _ = _collect_predictions(args, val_dataloader)
         val_probs = np.asarray(val_preds)[:, 1]
-        threshold, val_f1 = _best_f1_threshold(np.asarray(val_labels), val_probs)
-        threshold_metrics = _binary_metrics_at_threshold(labels_all, preds_all, threshold)
-        log(logger, "Validation-selected threshold = {:.4f}".format(threshold))
+        val_labels_np = np.asarray(val_labels)
+        f1_threshold, val_f1 = _best_f1_threshold(val_labels_np, val_probs)
+        minpse_threshold, val_minpse = _best_minpse_threshold(val_labels_np, val_probs)
+        f1_metrics = _binary_metrics_at_threshold(labels_all, preds_all, f1_threshold)
+        minpse_metrics = _binary_metrics_at_threshold(labels_all, preds_all, minpse_threshold)
+        threshold_metrics = {
+            "protocol": "validation_selected_per_metric_v2",
+            "f1": f1_metrics["f1"],
+            "f1_threshold": f1_threshold,
+            "f1_precision": f1_metrics["precision"],
+            "f1_recall": f1_metrics["recall"],
+            "minpse": minpse_metrics["minpse"],
+            "minpse_threshold": minpse_threshold,
+            "minpse_precision": minpse_metrics["precision"],
+            "minpse_recall": minpse_metrics["recall"],
+        }
+        log(logger, "Validation-selected F1 threshold = {:.4f}".format(f1_threshold))
         log(logger, "Val best F1 = {:.4f}".format(val_f1))
-        log(logger, "f1_score_val_threshold = {:.4f}".format(threshold_metrics["f1"]))
+        log(logger, "F1 at validation-selected threshold = {:.4f}".format(f1_metrics["f1"]))
+        log(logger, "Validation-selected minPSE threshold = {:.4f}".format(minpse_threshold))
+        log(logger, "Val best minPSE = {:.4f}".format(val_minpse))
+        log(logger, "minPSE at validation-selected threshold = {:.4f}".format(
+            minpse_metrics["minpse"]))
     if args.local_rank == 0:
         result_path = os.path.join(args.save_dir, "eval_results.json")
         with open(result_path, "w", encoding="utf-8") as f:
@@ -156,6 +224,8 @@ if __name__ == "__main__":
     parser.add_argument('--save_dir', '--save-dir', dest='save_dir', type=str, default='./export/')
     parser.add_argument('--pretrain-dir', type=str, default=None,
                         help='Directory containing pretrained checkpoint-mse.pth. Defaults to save_dir.')
+    parser.add_argument('--eval-only', action='store_true',
+                        help='Evaluate save_dir/checkpoint-prc.pth without pretraining or finetuning.')
     parser.add_argument('--split-seed', type=int, default=42,
                         help='Fixed patient split seed used consistently with pretraining.')
     parser.add_argument('--local-rank', type=int, default=0)
@@ -437,10 +507,25 @@ if __name__ == "__main__":
         save_metric = 'auprc'
     
     pretrain_dir = args.pretrain_dir if args.pretrain_dir else args.save_dir
+    if args.eval_only:
+        checkpoint_path = os.path.join(args.save_dir, 'checkpoint-prc.pth')
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f'Finetune checkpoint not found: {checkpoint_path}')
+        test(args, 'checkpoint-prc.pth', test_dataloader, val_dataloader)
+        if args.distributed:
+            dist.barrier()
+        raise SystemExit(0)
+
     checkpoint = torch.load(os.path.join(pretrain_dir, 'checkpoint-mse.pth'), weights_only=False)
     save_epoch = checkpoint['epoch']
     log(logger, "last saved model is in epoch {}".format(save_epoch))
-    encoder.load_state_dict(checkpoint['encoder'])
+    ignored = _load_model_state_dict(
+        encoder,
+        checkpoint['encoder'],
+        allow_unused_mnar_bias_mismatch=args.abl_no_mnar_bias,
+    )
+    if ignored:
+        log(logger, "Ignored disabled legacy CoMiss parameters: {}".format(", ".join(ignored)))
 
     best_prc = 0
     best_mse = float('inf')

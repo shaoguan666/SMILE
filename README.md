@@ -69,6 +69,10 @@ Main ablation semantics:
 - `smart-smile-lean-no-mnar-bias`: removes the sample-level co-missingness attention-logit bias.
 - `smart-smile-lean-no-film`: removes only the post-attention Time-Affine/FiLM transform; `time_enc` is still available to the attention block for time-dependent MNAR gating.
 
+The active time-gated CoMiss pathway uses a learnable per-head/per-pair scale
+with shape `(H, V, V)` (normally `H=4`). A sample-level time gate with shape
+`(B, H)` modulates it before broadcasting the bias to `(B, H, V, V)`.
+
 The direct CLI also contains diagnostic switches such as `--abl-no-time-mnar`,
 but these are not part of the main public ablation table.
 
@@ -94,6 +98,19 @@ python run_all_experiments.py \
   --datasets c12 c19 \
   --seeds 1 42 3407
 ```
+
+Re-evaluate existing checkpoints without retraining:
+
+```bash
+python run_all_experiments.py --eval-only \
+  --models smart smart-smile-lean smart-smile-lean-no-mnar-bias \
+  --datasets c12 c19 mimic_mortality mimic_decompensation \
+  --seeds 1 42 3407
+```
+
+Legacy `no-density` and `no-film` checkpoints that used scalar `(H,)` CoMiss
+scales are intentionally rejected and must be retrained under the current
+`(H, V, V)` implementation.
 
 One-off pretraining and finetuning:
 
@@ -137,6 +154,10 @@ Aggregate completed logs:
 ```bash
 python experiments/bibm_smile/aggregate_results.py
 ```
+
+Validation-selected F1/minPSE is the default aggregation protocol. Use
+`--threshold-protocol benchmark` only when explicitly reproducing the older
+test-optimized reporting protocol.
 
 Generated results are ignored by Git:
 

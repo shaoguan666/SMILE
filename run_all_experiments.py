@@ -16,6 +16,9 @@ Usage examples:
 
     # Skip pretrain if checkpoint already exists, redo finetune
     python run_all_experiments.py --finetune-only
+
+    # Re-evaluate existing finetune checkpoints with validation-selected thresholds
+    python run_all_experiments.py --eval-only
 """
 
 import argparse
@@ -209,11 +212,16 @@ def main():
                         help='Only run pretraining, skip finetuning')
     parser.add_argument('--finetune-only', action='store_true',
                         help='Only run finetuning (pretrain checkpoint must exist)')
+    parser.add_argument('--eval-only', action='store_true',
+                        help='Only evaluate existing checkpoint-prc.pth files')
     parser.add_argument('--force', action='store_true',
                         help='Re-run even if checkpoint already exists')
     args = parser.parse_args()
+    exclusive_modes = [args.pretrain_only, args.finetune_only, args.eval_only]
+    if sum(exclusive_modes) > 1:
+        parser.error('--pretrain-only, --finetune-only, and --eval-only are mutually exclusive')
     structured_models = models_require_mask_group_config(args.models)
-    if structured_models and not args.finetune_only:
+    if structured_models and not (args.finetune_only or args.eval_only):
         if not args.mask_group_config:
             parser.error(
                 '--mask-group-config is required for structured masking models: '
@@ -296,6 +304,26 @@ def main():
         # Lean models: batch_size=64, save_best (same setup as smart baseline)
         cur_batch_size = 64 if model in _LEAN_MODELS else args.batch_size
         cur_ft_epochs = 25 if model in _LEAN_MODELS else args.finetune_epochs
+        if args.eval_only:
+            ft_ckpt = finetune_ckpt(args.export_root, dataset, model, seed)
+            if not args.dry_run and not os.path.exists(ft_ckpt):
+                print(f'[WARN] finetune checkpoint missing for {model}/{dataset}/seed_{seed}, skipping evaluation')
+                failed.append(f'{tag_prefix} evaluation (no finetune ckpt)')
+                continue
+            cmd = launch_prefix(args, idx) + [
+                'main_finetune.py',
+                '--dataset', dataset,
+                '--seed', str(seed),
+                '--batch_size', str(cur_batch_size),
+                '--save_dir', args.export_root,
+                '--split-seed', str(args.split_seed),
+                '--eval-only',
+            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + arch_abl_extra
+            ok = run_cmd(cmd, f'{tag_prefix} | EVALUATE', args.dry_run, env=launch_env)
+            if not ok:
+                failed.append(f'{tag_prefix} evaluation')
+            continue
+
         if not args.finetune_only:
             pre_ckpt = pretrain_ckpt(args.export_root, dataset, pretrain_model, seed)
             if model == 'smart-smile-lean-v2-no-dual-head':
@@ -358,6 +386,7 @@ def main():
         print(f'Failed ({len(failed)}):')
         for f in failed:
             print(f'  - {f}')
+        raise SystemExit(1)
     else:
         print('All experiments completed successfully.')
 

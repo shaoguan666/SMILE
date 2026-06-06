@@ -53,7 +53,7 @@ def choose_log(paths: list[Path]) -> Path | None:
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
-def parse_log(path: Path, dataset: str) -> dict[str, float]:
+def parse_log(path: Path, dataset: str, threshold_protocol: str = "validation") -> dict[str, float]:
     text = path.read_text(encoding="utf-8", errors="replace")
     metrics: dict[str, float] = {}
     keys = ["auroc", "auprc", "minpse", "f1"] if dataset in BINARY_DATASETS else [
@@ -63,13 +63,31 @@ def parse_log(path: Path, dataset: str) -> dict[str, float]:
         matches = PATTERNS[key].findall(text)
         if matches:
             metrics[key] = float(matches[-1]) * 100.0
+    if dataset in BINARY_DATASETS and threshold_protocol == "validation":
+        metrics.pop("f1", None)
+        metrics.pop("minpse", None)
     eval_path = path.with_name("eval_results.json")
     if eval_path.exists():
         try:
             payload = json.loads(eval_path.read_text(encoding="utf-8"))
-            frozen = payload.get("validation_threshold_metrics") or {}
-            if dataset in BINARY_DATASETS and "f1" in frozen:
-                metrics["f1"] = float(frozen["f1"]) * 100.0
+            test_metrics = payload.get("test_metrics") or {}
+            for key in ("auroc", "auprc", "auc_micro", "auc_macro", "auc_weighted"):
+                if key in test_metrics:
+                    metrics[key] = float(test_metrics[key]) * 100.0
+            if dataset in BINARY_DATASETS:
+                if "f1_score" in test_metrics:
+                    metrics["f1"] = float(test_metrics["f1_score"]) * 100.0
+                if "minpse" in test_metrics:
+                    metrics["minpse"] = float(test_metrics["minpse"]) * 100.0
+                if threshold_protocol == "validation":
+                    metrics.pop("f1", None)
+                    metrics.pop("minpse", None)
+                    frozen = payload.get("validation_threshold_metrics") or {}
+                    if frozen.get("protocol") == "validation_selected_per_metric_v2":
+                        if "f1" in frozen:
+                            metrics["f1"] = float(frozen["f1"]) * 100.0
+                        if "minpse" in frozen:
+                            metrics["minpse"] = float(frozen["minpse"]) * 100.0
         except Exception:
             pass
     return metrics
@@ -153,6 +171,13 @@ def main() -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--export-root", type=Path, default=DEFAULT_EXPORT_ROOT)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
+    parser.add_argument(
+        "--threshold-protocol",
+        choices=["benchmark", "validation"],
+        default="validation",
+        help="benchmark=maximize F1/minPSE on the test PR curve for comparability; "
+             "validation=only use v2 thresholds selected on validation (default).",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -171,7 +196,7 @@ def main() -> int:
                 if log_path is None:
                     rows.append({**base, "metric": "", "value": "", "status": "missing_log"})
                     continue
-                metrics = parse_log(log_path, dataset)
+                metrics = parse_log(log_path, dataset, args.threshold_protocol)
                 if not metrics:
                     rows.append({**base, "metric": "", "value": "", "status": "missing_metrics"})
                     continue

@@ -183,6 +183,13 @@
       "bases:新建数据库": false
     }
   },
-  "active": "f7833bce89658ff9",
-  "lastOpenFiles": []
+  "active": "54a2a6d2886e4181",
+  "lastOpenFiles": [
+    "smile-paper/build/appendix.bbl",
+    "smile-paper/build/appendix.blg",
+    "smile-paper/build/appendix.pdf",
+    "smile-paper/build/appendix.out",
+    "smile-paper/build/appendix.aux",
+    "smile-paper/build/appendix.log"
+  ]
 }

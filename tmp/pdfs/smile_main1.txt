@@ -1,0 +1,608 @@
+     SMILE: Structured Missingness-Informed Learning for Clinical Time Series
+                                Representation
+
+                                                       Anonymous submission
+
+
+
+
+                             Abstract                                      We therefore begin with a structured missingness au-
+  ICU electronic health records are sparse and irregular, and           dit across three ICU datasets. The audit detects outcome-
+  their observation patterns can reflect clinical monitoring de-        stratified missingness, temporal non-stationarity, and phys-
+  cisions rather than random absence. We first conduct a struc-         iological block co-missingness. These findings suggest that
+  tured missingness audit across PhysioNet 2012, PhysioNet              the observation process is not merely sparse noise; it has
+  2019, and the MIMIC-III Clinical Database v1.4, reveal-               reusable structure that can be represented without relying on
+  ing outcome-stratified missingness, temporal non-stationarity,        test-set statistics or cohort-wide priors.
+  and physiological co-missingness blocks. Motivated by these              Motivated by the audit, we propose SMILE, an audit-
+  findings, we propose SMILE, a structured missingness-                 driven structured-missingness model for clinical time series.
+  informed representation learning framework for clinical time          The central idea is a direct audit-to-design mapping: tempo-
+  series. SMILE preserves binary masks while adding time-
+                                                                        ral non-stationarity is represented by time-local observation
+  local observation density, sample-level co-missingness inter-
+  action bias, and time-adaptive feature modulation. Across six         density, block co-missingness is represented by a sample-
+  ICU prediction tasks, SMILE achieves its strongest gains on           level interaction bias, and time-varying monitoring prac-
+  binary clinical event prediction, particularly PhysioNet 2012         tice is represented by time-adaptive feature modulation. Our
+  mortality and MIMIC-III decompensation, and also improves             implementation uses a missing-aware dual-channel masked-
+  both micro- and macro-AUROC on length of stay. The ab-                autoencoder architecture for controlled comparison, but the
+  lation results further reveal a boundary condition: structured        contribution is the conversion of audit-measured missingness
+  missingness is most useful when observation patterns are clin-        structure into representation signals.
+  ically aligned with the endpoint, and individual modules trade           Our contributions are:
+  off differently across tasks and metrics.
+                                                                         • A train-only structured-missingness audit of PhysioNet
+                                                                           2012, PhysioNet 2019, and MIMIC-III, quantifying
+                         Introduction                                      endpoint-associated, temporal, and physiological block
+ICU electronic health records (EHRs) are sparse and irreg-                 co-observation structure.
+ular: missing rates above 80% are common in benchmarks                   • SMILE, an audit-driven model that turns local obser-
+such as MIMIC-III and PhysioNet/CinC 2012 (Sun et al.                      vation density, sample-level co-missingness, and tempo-
+2026; Sharafoddini et al. 2019). Observation patterns are of-              ral modulation into structured missingness representation
+ten associated with care processes. Measurements are shaped                signals.
+by clinical orders, monitoring protocols, disease severity,
+care processes, and workflow, so the observation pattern it-             • Controlled experiments on six ICU prediction tasks,
+self can carry predictive information (Rubin 1976; Agniel,                 showing where structured missingness improves clinical
+Kohane, and Weber 2018; Che et al. 2018; Singh, Sato, and                  event prediction and where it introduces task-dependent
+Ohkuma 2021; Groenwold 2020).                                              trade-offs.
+   Existing methods exploit this signal in different ways—                The structured masking curriculum is treated as a sec-
+through imputation, missingness-aware prediction, and                   ondary pretraining regularizer, and diagnostic ablations are
+masked self-supervised representation learning (reviewed in             used to test implementation choices rather than to define
+the Related Work section)—but they largely treat ICU miss-              additional method modules.
+ingness as pointwise availability. This misses a more reusable
+view of the observation process: ICU measurements vary                                        Related Work
+over time, variables are often ordered in blocks, and moni-             Missingness-aware clinical prediction and imputation.
+toring practice changes across the patient trajectory.                  Because ICU records are highly incomplete, a large body of
+This is an anonymized submission for review purposes only. Dis-         work treats missingness as a modeling target rather than a nui-
+tribution, citation, or public sharing of this manuscript is strictly   sance. Imputation models reconstruct missing values through
+prohibited. Copyright and publication details will appear in the        recurrent, bidirectional, or graph-based dynamics (Cao et al.
+final version if accepted.                                              2018; Cini, Marisca, and Alippi 2022; Zhang et al. 2021),
+while missingness-aware predictors feed binary masks or              Figure 1 gives the compact main-text evidence. Binary
+elapsed time directly into the network so that the observa-       cohorts contain many endpoint-associated variables, but the
+tion pattern informs the prediction (Che et al. 2018; Yu et al.   directions vary, so the conclusion is not that positive cases
+2024). A parallel line models the irregular sampling pro-         are always more intensively monitored. Observation rates
+cess itself, using multi-time attention or multi-scale warping    also vary across early, middle, and late windows, and co-
+for irregularly sampled clinical series (Shukla and Marlin        observation matrices retain coherent physiological blocks.
+2021; Zhang et al. 2023; Rashidi et al. 2024), and task-          The supplementary material provides the complete six-
+specific detectors exploit observation timing for early sepsis    cohort summary.
+warning (Morrill et al. 2019). Most of these methods, how-           These findings motivate preserving temporal and cross-
+ever, encode missingness as pointwise availability and do         variable observation-pattern signals in the representation
+not represent higher-order structure such as physiological        model. SMILE augments a binary mask with the time-local
+co-missingness blocks or non-stationary monitoring inten-         density signal ρt,v (Eq. 2), represents coordinated observa-
+sity.                                                             tion with the sample-specific interaction bias Cb , and uses
+Masked-autoencoder representation learning for time               retained blocks to define structured corruption during pre-
+series. Masked reconstruction has become a standard               training. FiLM temporal modulation is inspired by temporal
+self-supervised objective for sequential data. Masked-            variation and tested through ablation. At inference time, all
+autoencoder variants for time series learn representations by     signals are computed from an individual input record rather
+reconstructing masked values, patches, or latent targets (Tang    than from cohort-level audit statistics or endpoint labels.
+and Zhang 2022; Nie et al. 2023; Cheng et al. 2026). Our
+backbone adopts a missing-aware dual-channel masked au-                                    Method
+toencoder purely as a controlled substrate; unlike these meth-
+                                                                  Problem Setup
+ods, our contribution is not the reconstruction objective but
+the injection of audit-measured missingness structure into        For a batch of ICU time series, values X ∈ RB×V ×T , ob-
+the representation.                                               servation masks M ∈ {0, 1}B×V ×T , and timestamps t are
+Structured and curriculum masking. Rather than mask-              mapped to a patient representation z. SMILE follows the
+ing uniformly at random, structured masking couples the           two-stage missing-aware representation-learning paradigm
+corruption process to spatial, temporal, or task structure, and   of SMART (Yu et al. 2024) and SPIME (Liu et al. 2024):
+curriculum masking schedules corruption difficulty to reduce      a self-supervised encoder is first trained on corrupted EHR
+shortcut interpolation (Miao, Chen, and Hu 2024; Tang et al.      records and is then fine-tuned for clinical prediction. The
+2024). We use a structured masking curriculum only as a           difference is where missingness is represented. Instead of
+secondary pretraining regularizer. SMILE differs from all of      treating the mask only as pointwise availability, SMILE rep-
+the above by turning three audit-measured properties—time-        resents three audit-derived structures: local observation den-
+local observation density, sample-level co-missingness, and       sity, sample-level co-missingness, and time-adaptive feature
+non-stationary monitoring practice—into explicit represen-        modulation.
+tation signals. Its time-adaptive feature modulation follows         The implementation uses a missing-aware dual-channel
+the feature-wise conditioning principle (Perez et al. 2017;       masked-autoencoder backbone to enable controlled compar-
+Kazemi et al. 2019), applied here to observation time rather      ison with a strong pretraining baseline. The encoder follows
+than to external conditioning inputs. The closest recent al-      a variable-first ordering and contains separate temporal and
+ternative, SPIME (Liu et al. 2024), replaces binary masks         cross-variable interaction pathways. The temporal channel
+with personalized univariate measurement frequencies but          models within-variable evolution, while the structured miss-
+does not model system-level block co-missingness or tem-          ingness audit shows that informative missingness structure
+poral non-stationarity, which are exactly the structures our      often appears as relationships among variables: blood gas
+audit identifies as predictive.                                   variables are bundled, blood-pressure variables are observed
+                                                                  as systems, and neurological variables share examination
+                                                                  practices. SMILE therefore injects structured missingness
+Preliminary Analysis of Missingness Structure                     signals into the input encoder and cross-variable interaction
+Rather than treating the ICU mask as pointwise availability,      blocks while preserving the temporal modeling path.
+we first ask whether the training records contain observa-
+tion structure worth preserving. We use three descriptive         Input Encoder
+diagnostics: endpoint-stratified observation fractions for bi-    SMILE uses a variable-independent input encoder that com-
+nary tasks (T2), early/middle/late variation in observation       bines clinical values with their observation masks before
+rates (T3), and physiological block co-observation measured       projecting each variable-time entry into a latent space. For
+by Spearman correlation (T4). Little’s MCAR compatibility         each patient record, a learnable CLS vector is prepended
+check (Little 1988) (T1), test definitions, effect sizes, and     along the temporal dimension and the resulting tokens are
+per-cohort tables are reported in the supplementary material.     encoded with positional information as in the backbone.
+These diagnostics do not identify MNAR from observed                 The role of time-local observation density in SMILE is
+data alone; they only test whether observable monitoring          to augment the value–mask pair. Let xt,v ∈ R denote the
+patterns contain endpoint-associated, temporal, and cross-        observed clinical value of variable v at time step t, and let
+variable structure.                                               mt,v ∈ {0, 1} be the corresponding binary observation mask
+                             A Outcome-associated missingness                                                                                                                          B Temporal structure is widespread
+                             Blue = q < 0.05; diamond = largest absolute difference                                                                                                    Dots = variables; label = significant / tested
+
+                      C12                                                                                           RespRate 30/37 sig.                                    C12                                                         36/37
+
+
+                                                                                                                                                                           C19                              34/34
+                                              FiO2
+                      C19                                                                                                    30/34 sig.
+                                                                                                                                                            MIMIC-Mort.                                                    16/17
+
+                                                                       pH
+                                                                                                                                                       MIMIC-Decomp.                                                           16/17
+               MIMIC-Mort.                                                                                                   15/17 sig.
+
+                                                                                                                                                        MIMIC-Pheno.                                                           16/17
+                                               pH
+            MIMIC-Decomp.                                                                                                    12/17 sig.                         MIMIC-LOS                                           17/17
+
+                         −20          −15 −10      −5      0     5     10   15                                                               20                                      0           5         10         15         20
+                                       Missing-rate difference by outcome (pp)                                                                                                                 Temporal observation-rate range (pp)
+
+                             C Representative co-observation structure (Spearman correlation)
+                             Variables reordered by physiological system; peach outline = retained block
+
+
+                                                 C12                                                                                        C19                                                             MIMIC-Mort.
+                                      6 retained | max δ = 1.18                                                                  3 retained | max δ = 0.87                                           2 retained | max δ = 0.70
+                                                                                                                                                                                                                                                                1.00
+
+                                                                                                                                                                                                                                                                0.75
+
+
+
+
+                                                                                                                                                                                                                                                                        Spearman correlation
+                                                                                                                                                                                                                                                                0.50
+
+                                                                                                                                                                                                                                                                0.25
+
+                                                                                                                                                                                                                                                                0.00
+
+                                                                                                                                                                                                                                                                −0.25
+
+                                                                                                                                                                                                                                                                −0.50
+
+                                                                                                                                                                                                                                                                −0.75
+
+                                                                                                                                                                                                                                                                −1.00
+                                                                       Electr.
+
+                                                                                 Renal
+
+
+                                                                                                  Cardiac
+
+
+
+
+                                                                                                                              Renal
+
+
+
+
+                                                                                                                                                                                                                     Anthro.
+                                                                 CBC
+
+
+
+
+                                                                                                                                       CBC
+
+
+
+
+                                                                                                                                                        Resp.
+
+
+
+
+                                                                                                                                                                           Electr.
+
+
+
+
+                                                                                                                                                                                                                               Resp.
+                                             Liver
+
+
+
+
+                                                                                         Vitals
+
+
+
+
+                                                                                                                                              Vitals
+
+
+
+
+                                                                                                                                                                                                                                        Vitals
+                                                     Blood gas
+
+
+
+
+                                                                                                                               Liver
+                                                                                                            Other
+
+
+
+
+                                                                                                                                                                   Bili.
+                                                                                                                                                                 Coag.
+
+
+
+
+                                                                                                                                                                                                      GCS
+
+
+
+                                                                                                                                                                                                               BP
+                                                                                                                                                                                     Other
+
+
+
+
+                                                                                                                                                                                                                                                 Other
+                              NI-BP
+                                      I-BP
+
+
+
+
+                             Train split only (seed 42). T2/T3: Benjamini-Hochberg q < 0.05. T4: retained when δ > 0.50.
+
+
+
+
+Figure 1: Representative train-only evidence of structured observation behavior. Panel A shows endpoint-associated missing-rate
+contrasts in binary tasks; Panel B shows the maximum early/middle/late observation-rate range; Panel C shows co-observation
+matrices with retained physiological blocks. Full definitions and complete task-level summaries are in the supplementary
+material.
+
+
+(mt,v = 1 if xt,v is observed, 0 otherwise). The input em-                                                                                                         interaction pathway with two missingness-aware operations.
+bedding is                                                                                                                                                         First, a sample-specific co-missingness matrix is injected as a
+                                                                                                                                                                  pre-softmax attention bias. Second, physical time conditions
+           et,v = MLP stack(xt,v , mt,v , ρt,v ) ,      (1)
+                                                                                                                                                                   the strength and output of variable attention through temporal
+where ρt,v is the time-local observation density defined as                                                                                                        gating and FiLM modulation. All components are computed
+                                                                                                                                                                   from the input record and do not aggregate test-set statistics.
+                           1 X
+                    ρt,v =          morig
+                                       k,v ,              (2)                                                                                                      Co-missingness bias. SMILE computes a signed co-
+                           w
+                                             k∈W(t)                                                                                                                missingness matrix per sample, avoiding a dataset-level prior.
+with W(t) a local window of w = 5 consecutive time steps                                                                                                           Let Mb ∈ {0, 1}T ×V be the observation mask of sample b,
+                                                                                                                                                                   where T is the number of time steps and V the number of clin-
+centred at t, and morig
+                     k,v ∈ {0, 1} the mask value before any                                                                                                        ical variables. Define the missingness indicator Rb = 1−Mb
+imputation or augmentation. Fixed-window tasks use sym-                                                                                                            (i.e. Rb,t,v = 1 when variable v is missing at time t) and let
+metric padding, while rolling prediction uses a causal win-
+                                                                                                                                                                   rb,t ∈ {0, 1}V denote the t-th row of Rb . Then
+dow.
+                                                                                                                                                                                                                                                                        T
+   The binary mask tells the model whether the current value                                                                                                                                         1 ⊤                                                        1X
+is observed, whereas ρt,v summarizes the monitoring inten-                                                                                                                                   Cb =     R Rb − q b q ⊤
+                                                                                                                                                                                                                   b ,                                   qb =         rb,t .                   (3)
+                                                                                                                                                                                                     T b                                                        T t=1
+sity around that time point. This distinction matters in ICU
+data: a missing blood gas inside a densely monitored period                                                                                                        Here qb ∈ [0, 1]V is the per-variable marginal missing rate,
+carries a different meaning from a missing blood gas during                                                                                                        so qb q⊤b represents the expected joint missingness under
+a globally sparse stable period. For rolling decompensation                                                                                                        independence. Positive entries of Cb indicate above-expected
+prediction, the causal window ensures that density does not                                                                                                        joint missingness under the sample marginals. The matrix is
+encode future measurements.                                                                                                                                        injected before softmax:
+                                                                                                                                                                                               (h) (h) ⊤               
+SMILE Block                                                                                                                                                                    (h)              Q (K )
+                                                                                                                                                                     Attention = Softmax             √         + Sh Cb , (4)
+Figure 2 shows the data flow. After the density-augmented                                                                                                                                              dk
+input encoder, the SMILE block preserves the backbone’s                                                                                                            where Q(h) , K (h) ∈ RV ×dk are the query and key projec-
+temporal attention pathway and modifies the cross-variable                                                                                                         tions of head h, dk is the per-head dimension, and Sh is a
+Figure 2: Overview of SMILE. Density embedding, sample-level co-missingness interaction bias, and temporal modulation
+inject structured-missingness signals into the cross-variable interaction pathway while preserving the temporal path of the
+dual-channel encoder.
+
+
+learnable per-head scalar initialized to zero.                    where 1 is the all-ones vector, ensuring the scale starts at
+   Centering by qb q⊤b removes the trivial effect that two fre-   identity when γ = 0.
+quently missing variables will co-occur simply because both          The temporal factor is used as a soft gate rather than a
+are sparse. Thus, Cb captures deviation from the sample’s         discrete clinical phase detector. This is important because
+own marginal missingness pattern rather than raw missing          ICU trajectories are heterogeneous: two patients at the same
+rate. The zero initialization of Sh makes the initial model       clock time may be in very different physiological states, and
+equivalent to the unmodified attention block; the network         the same patient may alternate between dense and sparse
+must learn to activate the bias only when it improves the         monitoring. FiLM provides a lightweight way to modulate
+supervised or self-supervised objective.                          attention outputs without replacing the underlying attention
+                                                                  mechanism. In practice, the temporal projection is initialized
+FiLM temporal modulation. The co-missingness bias de-             conservatively, following the same motivation as residual
+scribes which variables are jointly missing within a sample,      zero-initialization: SMILE begins close to the baseline and
+but the clinical meaning of this relation may change over         learns time-conditioned deviations during training.
+the course of an ICU stay. To condition cross-variable re-
+combination on physical time, SMILE generates a temporal          Two-Stage Training Strategy
+factor from the time encoding. Let Etime ∈ RT ×d be the po-
+sitional time encoding of the sample, σ(·) the element-wise       SMILE follows the same high-level training strategy as
+sigmoid function, and Wtime , btime learnable weight and bias     SMART and SPIME: the encoder is first pretrained with a
+parameters. The temporal gating factor is                         self-supervised reconstruction objective and then fine-tuned
+                                                                  with a task-specific prediction head. During pretraining, an
+        Dtime = σ (Wtime · AvgPool(Etime ) + btime ) .     (5)    online encoder receives a corrupted record, while an EMA
+                                                                  target encoder embeds the original record. The reconstruc-
+The attention bias matrix is defined as                           tion loss is applied only to entries that were originally ob-
+                                  (h)                            served and then hidden by the pretraining corruption process:
+                B (h) = Sh · Dtime ⊙ Cb ,                  (6)
+where ⊙ denotes the Hadamard (element-wise) product and                               1    X
+                                                                             Lrec =                ĥb,v,t − h̃b,v,t ,     (10)
+  (h)
+Dtime is the component of Dtime for head h. The attention                            |Ω|                            1
+                                                                                         (b,v,t)∈Ω
+computation becomes
+                          (h) (h) ⊤                             where ĥ is the online reconstruction, h̃ is the EMA target rep-
+             (h)           Q (K )            (h)                  resentation, and Ω denotes the artificially masked observed
+   Attention = Softmax          √        +B        . (7)
+                                  dk                              positions. Restricting Ω to observed entries avoids penaliz-
+                                                                  ing the model for true unobserved clinical values. During
+SMILE also applies FiLM (Perez et al. 2017) to the atten-         fine-tuning, the reconstruction decoder is replaced by a la-
+tion output. A dedicated MLP produces per-variable affine         bel decoder and the encoder receives the uncorrupted input
+parameters from the time encoding:                                mask. Binary tasks use binary cross-entropy, and multi-class
+                 [γ, β] = MLPFiLM (Etime ),                (8)    tasks use cross-entropy. The reconstruction loss is not mixed
+                                                                  with the supervised loss in downstream training.
+                d
+where γ, β ∈ R are the learned scale and shift vectors, re-
+spectively. Let X ∈ RV ×d denote the input to the variable-       Structured masking curriculum. The main training mod-
+attention sub-layer and Hatt ∈ RV ×d its output; the modu-        ification in SMILE is the corruption policy used during self-
+lated residual update is                                          supervised pretraining. Random masking teaches local in-
+                                                                  terpolation, but it rarely matches the missingness structures
+            Xnew = X + ((1 + γ) ⊙ Hatt + β) ,              (9)    found in the audit: ICU records often lose contiguous time
+spans and physiological systems rather than isolated scalar       the source implementations and reported baselines, F1 and
+entries. SMILE therefore mixes the following three corrup-        min(Se, P + ) are reported as the maximum values obtained
+tion modes:                                                       by sweeping the test-set precision–recall curve. They should
+ • Random masking independently hides variable–time en-           therefore be interpreted as oracle operating-point summaries
+   tries, matching the SMART pretraining corruption and           rather than performance at a deployment threshold.
+   targeting scattered missing observations.                         We compare against recurrent, attention-based, graph-
+                                                                  based, and self-supervised baselines under the same
+ • Temporal block masking selects a randomly located              train/validation/test splits. The missing-aware masked-
+   contiguous time window and hides all variables within          autoencoder baseline is used both as the strongest base-
+   that window, simulating a temporary interruption of pa-        line and as the implementation substrate for controlled
+   tient monitoring.                                              comparison. AUROC measures global ranking, AUPRC is
+ • System-level masking selects one retained physiologi-          emphasized for imbalanced binary outcomes, and F1 and
+   cal group g ∈ G and hides all variables in that group          min(Se, P + ) summarize the best attainable test-set operat-
+   within a random contiguous time window. This simulates         ing points under the benchmark protocol. Validation-selected
+   a temporarily unavailable or unrequested class of mea-         threshold results are retained as a separate diagnostic and are
+   surements; for example, the blood-gas group can hide           not mixed into the main comparison tables. For phenotyping
+   FiO2, PaCO2, PaO2, and pH together.                            and length of stay, we report micro- and macro-AUROC to
+The physiological groups and data-driven retention rule are       distinguish sample-weighted behavior from class-balanced
+specified in the supplementary material. In all three modes,      behavior. All tabulated values are percentages.
+only originally observed hidden entries contribute to Ω, and
+the sampled mask ratio is ri ∼ U(0.15, 0.75).                     Implementation Details
+   Let η = epoch/Tepoch denote training progress. The prob-       For MIMIC-III, mortality and phenotyping are generated
+ability of structured masking is increased smoothly:              through the MIMIC-III benchmark task pipeline (Harutyun-
+                                                                 yan et al. 2019); decompensation and length of stay use
+        psys (η) = max 0, 0.6(η − 0.2) ,                (11)      the documented local task-generation settings provided with
+                                                                  our codebase. Within each task cohort, all compared mod-
+                                       
+      ptemp (η) = max 0, 0.8(η − 0.1) − psys (η),       (12)
+                                                                  els use identical preprocessing and fixed train/validation/test
+      prand (η) = 1 − psys (η) − ptemp (η).               (13)    splits. Values are normalized using training-set statistics, and
+Early epochs therefore resemble the standard random-mask          the observation mask is defined as one for measured entries
+objective, which stabilizes the latent reconstruction task. As    and zero otherwise before any pretraining corruption is ap-
+training progresses, the encoder is increasingly exposed to       plied. For binary tasks, the classifier is selected by validation
+contiguous temporal gaps and physiological-system dropout,        AUPRC; for phenotyping and length of stay, selection uses
+forcing the SMILE block to use the same density and co-           macro-AUROC and the configured length-of-stay AUROC
+missingness signals that will be available at fine-tuning time.   protocol, respectively. The encoder dimension is 32, with
+The curriculum is treated as a pretraining regularizer rather     two encoder layers, four attention heads, dropout 0.1, Adam
+than as an additional architecture: the architectural contribu-   optimization, learning rate 10−3 , batch size 64, and cosine
+tion is the ability to represent structured missingness, while    learning-rate decay. Unless otherwise stated, pretraining uses
+the curriculum controls how often such structure is presented     25 epochs and fine-tuning uses 25 epochs for the controlled
+during self-supervision.                                          SMILE/ablation runs, with five frozen fine-tuning warm-up
+                                                                  epochs for the pretrained encoder. Experiments use seeds
+                       Experiments                                {1, 42, 3407} and the same evaluation code across model
+                                                                  variants. Code and generated scripts are organized under the
+Experimental Setup                                                accompanying SMART/SMILE workspace and will be re-
+We evaluate PhysioNet 2012 (C12 mortality), PhysioNet             leased after de-anonymization.
+2019 (C19 sepsis), and four tasks derived from the MIMIC-
+III Clinical Database v1.4: in-hospital mortality, decompen-      Main Results
+sation, phenotyping, and length of stay (Johnson, Pollard,        On binary clinical event prediction (Table 1), SMILE
+and Mark 2016; Johnson et al. 2016; Harutyunyan et al.            achieves the strongest results on most metrics, with AUPRC
+2019). MIMIC-III v1.4 contains deidentified critical-care         serving as the primary metric for imbalanced tasks. The
+records and is made available through PhysioNet under cre-        largest gains appear on MIMIC-III decompensation (AUPRC
+dentialed access, required training, and a Data Use Agree-        +6.63, F1 +4.75) and PhysioNet 2012 mortality (F1 +8.73),
+ment (Johnson, Pollard, and Mark 2016; Goldberger et al.          both of which show strong audit-measured structured miss-
+2000). Its creation was approved by the Institutional Review      ingness signals. C19 sepsis shows smaller but consistent im-
+Boards of Beth Israel Deaconess Medical Center and the            provements, while MIMIC mortality improves in AUROC,
+Massachusetts Institute of Technology, with individual pa-        AUPRC, and F1 but not in min(Se, P + ).
+tient consent waived for the deidentified database (Johnson          For multi-label phenotyping (Table 2), SMILE improves
+et al. 2016). Our study uses derived time-series task cohorts     both micro- and macro-AUROC, suggesting that the struc-
+and reports aggregate results only. Results are mean ± stan-      tured missingness signals are useful beyond binary end-
+dard deviation over seeds {1, 42, 3407}. For consistency with     points. Length of stay shows the same direction: SMILE
+Model                     C12                           C19                           MM                            MD
+                AUPRC                F1        AUPRC              F1         AUPRC            F1           AUPRC            F1
+AdaCare     40.54 ± 2.36 27.80 ± 2.97 41.13 ± 2.75 36.87 ± 0.96 41.26 ± 1.62 27.47 ± 1.96 52.41 ± 1.76 51.62 ± 0.84
+StageNet    47.01 ± 2.94 38.27 ± 2.74 59.11 ± 4.63 54.89 ± 3.28 51.77 ± 3.62 40.90 ± 1.69 64.97 ± 0.60 62.51 ± 0.99
+ConCare     47.77 ± 3.62 30.22 ± 2.79 74.83 ± 3.47 67.27 ± 3.46 51.64 ± 3.34 35.76 ± 2.58 65.50 ± 1.30 59.73 ± 2.25
+GRASP       47.93 ± 5.73 31.90 ± 2.60 74.47 ± 3.79 66.75 ± 3.41 51.84 ± 3.42 38.00 ± 1.75 64.29 ± 0.64 58.48 ± 0.13
+SAFARI      45.58 ± 3.59 11.06 ± 2.09 72.06 ± 1.74 69.06 ± 1.14 48.96 ± 3.01 33.96 ± 3.83 61.93 ± 1.57 59.71 ± 0.11
+PPN         49.98 ± 3.97 37.64 ± 3.19 72.70 ± 4.99 68.08 ± 2.71 51.24 ± 2.96 40.60 ± 1.83 64.91 ± 0.33 62.80 ± 1.41
+RainDrop    37.23 ± 1.20 23.85 ± 3.39 72.82 ± 3.68 67.58 ± 2.54 46.21 ± 2.71 36.29 ± 3.20 61.16 ± 1.47 58.21 ± 2.61
+Warpformer 48.10 ± 3.95  40.26 ± 3.68 73.03 ± 2.53 65.93 ± 1.79 51.49 ± 1.89 36.83 ± 3.12 68.21 ± 1.64 63.70 ± 0.88
+PrimeNet    49.25 ± 2.36 37.10 ± 2.67 33.38 ± 2.29 12.46 ± 2.87 51.41 ± 0.89 38.71 ± 2.62 57.86 ± 1.32 51.59 ± 1.71
+SMART       53.84 ± 2.24 47.53 ± 2.33 81.67 ± 0.84 75.37 ± 2.62 53.30 ± 0.12 44.23 ± 2.03 71.26 ± 0.81 67.38 ± 0.67
+SMILE      55.61 ± 0.97 56.26 ± 0.14 82.45 ± 1.42 76.50 ± 1.59 53.39 ± 4.79 52.31 ± 3.46 77.89 ± 1.03 72.13 ± 0.68
+
+Model                     C12                           C19                           MM                            MD
+                AUROC       min(Se, P + )      AUROC      min(Se, P + )      AUROC      min(Se, P + )     AUROC       min(Se, P + )
+AdaCare     78.01 ± 1.16 41.57 ± 3.60 84.70 ± 0.43 42.88 ± 2.47 78.35 ± 1.12 42.68 ± 0.81 87.06 ± 1.23 49.96 ± 1.95
+StageNet    82.55 ± 1.75 49.91 ± 1.08 91.25 ± 1.50 56.21 ± 3.08 85.32 ± 0.62 49.84 ± 3.12 92.49 ± 0.47 60.44 ± 0.93
+ConCare     82.74 ± 1.47 46.65 ± 2.71 94.39 ± 0.74 69.79 ± 3.07 84.97 ± 0.96 49.61 ± 1.61 92.43 ± 0.46 61.54 ± 1.01
+GRASP       82.98 ± 0.66 49.53 ± 3.23 94.43 ± 0.76 69.75 ± 2.10 84.79 ± 1.26 49.68 ± 2.19 92.25 ± 0.34 60.76 ± 1.54
+SAFARI      81.84 ± 1.09 47.54 ± 2.32 94.64 ± 0.83 70.03 ± 1.68 84.48 ± 1.16 48.81 ± 1.38 90.69 ± 0.16 58.64 ± 1.73
+PPN         83.42 ± 1.23 48.45 ± 1.51 94.25 ± 1.07 68.96 ± 2.25 84.90 ± 0.96 50.42 ± 1.12 91.50 ± 0.70 60.65 ± 0.91
+RainDrop    76.86 ± 1.67 38.31 ± 1.41 92.90 ± 0.79 68.74 ± 2.42 83.21 ± 0.99 46.30 ± 1.51 90.48 ± 1.60 56.55 ± 2.44
+Warpformer 83.21 ± 2.09  48.73 ± 3.22 93.86 ± 0.77 65.93 ± 1.79 84.11 ± 1.10 48.35 ± 2.02 93.24 ± 0.96 64.42 ± 0.97
+PrimeNet    84.19 ± 0.52 49.67 ± 2.58 83.60 ± 1.16 36.18 ± 2.39 84.82 ± 1.05 50.96 ± 1.01 91.15 ± 1.49 54.99 ± 2.66
+SMART       85.80 ± 0.05 52.63 ± 1.37 95.92 ± 0.84 75.61 ± 2.76 85.61 ± 0.62 51.29 ± 1.35 94.20 ± 0.12 65.52 ± 1.74
+SMILE      86.02 ± 0.54 54.97 ± 0.53 96.30 ± 0.30 75.63 ± 1.23 86.00 ± 1.67 51.95 ± 3.47 96.31 ± 0.37 69.70 ± 1.34
+
+Table 1: Binary-task test results (mean ± std, %). Upper block reports AUPRC/F1; lower block reports AUROC/min(Se, P + ).
+Best values are in bold. C12: PhysioNet 2012 mortality; C19: PhysioNet 2019 sepsis; MM: MIMIC mortality; MD: MIMIC
+decompensation.
+
+
+Model
+                   Phenotyping              Length of Stay             Ablation Study
+               Micro         Macro        Micro        Macro
+AdaCare     73.75 ± 0.26 63.28 ± 0.62 82.11 ± 0.40 66.06 ± 0.97        The main ablations probe the three structured-missingness
+StageNet    79.53 ± 0.31 73.33 ± 0.30 83.26 ± 0.15 69.54 ± 0.39        pathways: time-local density, the sample-level co-
+ConCare     78.03 ± 0.21 71.05 ± 0.36 83.19 ± 0.12 69.27 ± 0.50
+GRASP       76.97 ± 0.25 69.08 ± 0.47 83.20 ± 0.20 69.24 ± 0.47        missingness attention bias, and post-attention Time-
+SAFARI      75.69 ± 0.45 66.91 ± 0.84 82.93 ± 0.21 68.51 ± 0.48        Affine/FiLM modulation. The CoMiss Bias ablation removes
+PPN         76.55 ± 0.41 68.77 ± 0.54 83.13 ± 0.18 68.52 ± 0.48
+RainDrop    78.38 ± 0.42 71.59 ± 0.44 82.83 ± 0.18 68.23 ± 0.66        the whole co-missingness pathway including its time gate,
+Warpformer 80.36 ± 0.23  74.65 ± 0.23 83.34 ± 0.28 69.53 ± 0.45        whereas the Time-Affine ablation removes only the FiLM
+PrimeNet    76.66 ± 0.19 68.90 ± 0.17 82.89 ± 0.18 67.88 ± 0.40
+SMART       81.41 ± 0.18 76.13 ± 0.14 83.92 ± 0.24 70.29 ± 0.44        transform, leaving time-conditioned gating available to vari-
+SMILE      82.51 ± 0.28 77.43 ± 0.19 84.46 ± 0.22 72.78 ± 0.39         able attention. Two facts frame Table 3. First, Full SMILE
+                                                                       improves over the backbone on all sixteen binary task-metric
+Table 2: Multi-class and multi-label AUROC results (mean               cells, so the complete configuration is never worse than the
+± std, %). Best values are in bold. Micro and macro denote             backbone it augments. Second, the ranking among SMILE
+micro- and macro-averaged AUROC.                                       variants shifts across tasks: Full SMILE ranks first or sec-
+                                                                       ond on all four, while removing Time-Affine is numerically
+                                                                       best on C19 and removing the co-missingness bias is best
+                                                                       on MIMIC decompensation. These reversals are not sta-
+improves micro-AUROC from 83.92 to 84.46 and macro-                    tistically significant: paired t-tests across the three seeds
+AUROC from 70.29 to 72.78. The larger macro-AUROC                      show that no ablation exceeds Full SMILE at p < 0.05
+gain suggests that the representation improves class-balanced          on any task or metric, while the only significant effects
+discrimination while retaining sample-weighted ranking per-            are degradations—removing the co-missingness bias signif-
+formance.                                                              icantly lowers C12 min(Se, P + ) and F1 (both p < 0.05).
+                                                                       The numeric reversals thus sit within seed-level variance in
+   Overall, the results support a task-dependent interpretation        a shared band above the backbone, so we recommend Full
+rather than a universal improvement claim. The preliminary             SMILE as a robust, tuning-free default. Where a lighter con-
+analysis in Figure 1 and the supplementary audit summary               figuration does suffice, the audit is predictive: the reversal
+show that endpoint-associated, temporal, and block-level ob-           closest to significance—dropping temporal modulation on
+servation structure is present in the training cohorts; it is          C19 (p=0.07 for min(Se, P + ))—is the task with the weak-
+not used as a monotonic predictor of downstream gain. Per-             est audit-measured temporal non-stationarity (observation-
+formance differences are therefore interpreted through the             rate range 0.069 versus 0.11–0.15 elsewhere), so the audit
+combination of audit structure, task objective, and ablation           flags a priori where that module has little to exploit; the
+behavior.                                                              co-missingness trade-off on decompensation is not resolved
+                                             C12 Mortality                                                   C19 Sepsis
+Configuration
+                          AUROC           AUPRC    min(Se, P + )             F1           AUROC          AUPRC    min(Se, P + )           F1
+Backbone                 84.74 ± 0.97    51.91 ± 3.71    50.21 ± 2.60    37.91 ± 5.57    95.61 ± 0.86   80.80 ± 3.15   73.73 ± 2.20   73.76 ± 3.01
+SMILE-Full              86.02 ± 0.54     55.61 ± 0.97   54.97 ± 0.53     56.26 ± 0.14    96.30 ± 0.30   82.45 ± 1.42   75.63 ± 1.23   76.50 ± 1.59
+SMILE w/o Density        85.52 ± 0.26    54.89 ± 0.75    53.58 ± 0.89    56.21 ± 1.22 96.22 ± 0.27 82.39 ± 1.78 76.12 ± 0.73 77.20 ± 1.35
+SMILE w/o CoMiss Bias    85.42 ± 0.34    55.98 ± 0.30    53.57 ± 0.76    55.14 ± 0.16 96.29 ± 0.15 81.62 ± 1.14 74.50 ± 1.80 75.82 ± 1.57
+SMILE w/o Time-Affine    85.88 ± 0.14   56.89 ± 0.93     53.31 ± 0.45   56.30 ± 0.23 96.55 ± 0.17 83.06 ± 0.84 77.41 ± 0.43 78.20 ± 0.96
+                                           MIMIC Mortality                                              MIMIC Decompensation
+Configuration
+                          AUROC           AUPRC   min(Se, P + )              F1           AUROC          AUPRC    min(Se, P + )           F1
+Backbone                 84.06 ± 1.01 49.20 ± 2.82 48.27 ± 0.97 41.30 ± 5.12             95.66 ± 0.41   74.79 ± 0.31   67.56 ± 0.92   69.55 ± 0.29
+SMILE-Full              86.00 ± 1.67 53.39 ± 4.79 51.95 ± 3.47 52.31 ± 3.46              96.31 ± 0.37   77.89 ± 1.03   69.70 ± 1.34   72.13 ± 0.68
+SMILE w/o Density        85.36 ± 0.25    48.78 ± 0.52    49.21 ± 1.34    50.61 ± 0.57    96.35 ± 0.19 77.28 ± 1.38 69.55 ± 1.47 71.90 ± 1.52
+SMILE w/o CoMiss Bias    85.79 ± 0.37    50.21 ± 0.24    49.33 ± 0.34    51.33 ± 0.86   96.46 ± 0.11 78.03 ± 1.25 69.96 ± 1.27 72.23 ± 0.41
+SMILE w/o Time-Affine    85.10 ± 0.33    49.14 ± 1.16    48.91 ± 1.44    50.96 ± 0.36    96.45 ± 0.29 76.94 ± 1.89 69.10 ± 2.62 70.75 ± 2.16
+
+Table 3: Main component ablation study of SMILE on binary tasks (mean ± std, %). Best values are in bold; second-best values
+are underlined. Backbone denotes the missing-aware dual-channel masked-autoencoder baseline without structured missingness
+modules. Diagnostic ablations are reported in the supplementary material.
+
+
+by current audit statistics. Full paired-significance tests and              expected joint missingness for that record, and the learned
+diagnostic ablations are reported in the supplementary ma-                   head scalar shows whether a head uses or suppresses the
+terial.                                                                      signal. This is not a causal account of monitoring decisions,
+                                                                             but a more transparent pathway than an unstructured binary
+                        Discussion                                           feature.
+When it helps. SMILE’s gains are largest when missingness
+is structured and clinically coupled to the endpoint: C12                                               Limitations
+mortality and decompensation both show strong block or                       The study uses fixed benchmark splits and three seeds;
+temporal structure and large AUPRC/F1 gains, indicating                      broader cross-cohort validation, stronger statistical power,
+better high-risk separation.                                                 and per-subgroup calibration are natural extensions, and
+   When it may not help. The bias is not universal: if vari-                 would also sharpen the ablation significance tests. The
+ables are nearly always observed or missing, or labels depend                experiments localize SMILE to one dual-channel imple-
+on workflow rather than bedside monitoring, co-missingness                   mentation, so additional backbones would test architectural
+may add capacity without signal and temporal condition-                      portability. Parameter-matched, random-bias, and global-co-
+ing may overfit timing. As the ablation shows, however, no                   missingness controls remain important for separating struc-
+single-module removal significantly beats Full SMILE, and                    tured missingness from extra capacity or generic attention-
+the only a priori predictable case—dropping temporal mod-                    bias effects. Finally, temporal modulation is interpreted only
+ulation on C19, the least non-stationary task—follows the                    as time-conditioned feature recombination, not an identifi-
+audit; the full composition therefore remains a robust default               able clinical phase detector.
+whose task-specific pruning is optional.                                        Our audits are also statistical diagnostics: they neither
+   Attribution. SMILE shares the backbone of the strongest                   separate MNAR from MAR from observed data alone nor
+controlled baseline, with the intervention localized to the                  causally identify clinician behavior, since label-associated
+variable interaction pathway; the random-only comparison                     missingness can arise from protocols, severity, workflow, or
+indicates the gains are not solely a curriculum effect (sup-                 dataset construction. SMILE uses these signals predictively,
+plementary material), though parameter-matched and bias                      but deployment would require external validation, calibra-
+controls would isolate capacity effects more completely.                     tion, and monitoring for measurement-practice shift.
+   Relation to imputation. SMILE does not replace ded-
+icated imputers; it uses the observation process as a rep-                                              Conclusion
+resentation signal. This matters when missingness is in-
+                                                                             SMILE turns audit-measured ICU missingness structure
+formative: imputation improves completeness, but the fact
+                                                                             into a representation-learning bias—density, sample-level
+that a value was not ordered can itself remain informa-
+                                                                             co-missingness, and temporal modulation injected into vari-
+tive. Whereas SPIME (Liu et al. 2024) performs personal-
+                                                                             able interaction. Its strongest gains are on binary ICU event
+ized latent-space imputation from per-patient measurement
+                                                                             prediction, and it exposes a clear boundary: structured-
+frequency, SMILE keeps the binary mask, adds local den-
+                                                                             missingness modeling helps most when observation patterns
+sity, and uses sample-level co-missingness as an interaction
+                                                                             are strong, structured, and endpoint-aligned.
+signal—a representation-learning rather than imputation-
+first approach.
+   Interpretability. The co-missingness matrix is computed                                              References
+from each sample’s mask, so it can be inspected along-                       Agniel, D.; Kohane, I. S.; and Weber, G. M. 2018. Biases
+side physiological subsystems: positive entries mark above-                  in Electronic Health Record Data Due to Processes within
+the Healthcare System: Retrospective Observational Study.        Morrill, J.; Kormilitzin, A.; Nevado-Holgado, A.; Swami-
+BMJ, 361: k1479.                                                 nathan, S.; Howison, S.; and Lyons, T. 2019. The Signature-
+Cao, W.; Wang, D.; Li, J.; Zhou, H.; Li, L.; and Li, Y. 2018.    Based Model for Early Detection of Sepsis from Electronic
+BRITS: Bidirectional Recurrent Imputation for Time Series.       Health Records in the Intensive Care Unit. In Computing in
+In Advances in Neural Information Processing Systems, vol-       Cardiology (CinC).
+ume 31. Curran Associates, Inc.                                  Nie, Y.; Nguyen, N. H.; Sinthong, P.; and Kalagnanam, J.
+Che, Z.; Purushotham, S.; Cho, K.; Sontag, D.; and Liu,          2023. A Time Series is Worth 64 Words: Long-term Fore-
+Y. 2018. Recurrent Neural Networks for Multivariate Time         casting with Transformers. In International Conference on
+Series with Missing Values. Scientific Reports, 8(1): 6085.      Learning Representations.
+Cheng, M.; Tao, X.; Liu, Z.; Liu, Q.; Zhang, H.; Zhang,          Perez, E.; Strub, F.; de Vries, H.; Dumoulin, V.; and
+R.; and Chen, E. 2026. TimeMAE: Self-Supervised Rep-             Courville, A. 2017. FiLM: Visual Reasoning with a General
+resentations of Time Series with Decoupled Masked Au-            Conditioning Layer.
+toencoders. Proceedings of the Nineteenth ACM Interna-           Rashidi, P.; Contreras, M.; Silva, B.; Shickel, B.; Davidson,
+tional Conference on Web Search and Data Mining, 498–            A.; Ozrazgat-Baslanti, T.; Ren, Y.; Guan, Z.; Balch, J.; Zhang,
+508. Conference Name: WSDM ’26:The Nineteenth ACM                J.; Bandyopadhyay, S.; Loftus, T.; Khezeli, K.; Nerella, S.;
+International Conference on Web Search and Data Mining           and Bihorac, A. 2024. APRICOT-Mamba: Acuity Prediction
+ISBN: 9798400722929.                                             in Intensive Care Unit (ICU): Development and Validation
+Cini, A.; Marisca, I.; and Alippi, C. 2022. FILLING THE G        of a Stability, Transitions, and Life Sustaining Therapies
+AP S: MULTIVARIATE TIME SERIES IMPUTATION BY                     Prediction Model.
+GRAPH NEURAL NETWORKS. International Conference                  Rubin, D. B. 1976. Inference and Missing Data. Biometrika,
+on Learning Representations.                                     63(3): 581–592.
+Goldberger, A. L.; Amaral, L. A. N.; Glass, L.; Hausdorff,       Sharafoddini, A.; Dubin, J. A.; Maslove, D. M.; and Lee, J.
+J. M.; Ivanov, P. C.; Mark, R. G.; Mietus, J. E.; Moody,         2019. A New Insight Into Missing Data in Intensive Care
+G. B.; Peng, C.-K.; and Stanley, H. E. 2000. PhysioBank,         Unit Patient Profiles: Observational Study. JMIR Medical
+PhysioToolkit, and PhysioNet: Components of a New Re-            Informatics, 7(1): e11605.
+search Resource for Complex Physiologic Signals. Circula-        Shukla, S. N.; and Marlin, B. M. 2021. Multi-Time
+tion, 101(23): e215–e220.                                        Attention Networks for Irregularly Sampled Time Series.
+Groenwold, R. H. H. 2020. Informative Missingness in Elec-       ArXiv:2101.10318 [cs].
+tronic Health Record Systems: The Curse of Knowing. Di-          Singh, J.; Sato, M.; and Ohkuma, T. 2021. On Missingness
+agnostic and Prognostic Research, 4: 8.                          Features in Machine Learning Models for Critical Care: Ob-
+Harutyunyan, H.; Khachatrian, H.; Kale, D. C.; Ver Steeg,        servational Study. JMIR Medical Informatics, 9(12): e25022.
+G.; and Galstyan, A. 2019. Multitask Learning and Bench-         Sun, C.; Song, M.; Cai, D.; Zhang, B.; Li, H.; and Hong, S.
+marking with Clinical Time Series Data. Scientific Data,         2026. A Review of Deep Learning Methods for Irregularly
+6(1): 96.                                                        Sampled Medical Time Series Data. Health Data Science,
+Johnson, A.; Pollard, T.; and Mark, R. 2016. MIMIC-III           6: 0456.
+Clinical Database. PhysioNet. Version 1.4.                       Tang, P.; and Zhang, X. 2022. MTSMAE: Masked Autoen-
+Johnson, A. E. W.; Pollard, T. J.; Shen, L.; Lehman, L.-w. H.;   coders for Multivariate Time-Series Forecasting. In 2022
+Feng, M.; Ghassemi, M.; Moody, B.; Szolovits, P.; Celi,          IEEE 34th International Conference on Tools with Artificial
+L. A.; and Mark, R. G. 2016. MIMIC-III, a Freely Accessible      Intelligence (ICTAI), 982–989. ISSN: 2375-0197.
+Critical Care Database. Scientific Data, 3: 160035.              Tang, Y.; Xie, Z.; Lin, Z.; Ye, D.; and Li, S. 2024. Learning
+Kazemi, S. M.; Goel, R.; Eghbali, S.; Ramanan, J.; Sahota,       Versatile Skills with Curriculum Masking. In Advances in
+J.; Thakur, S.; Wu, S.; Smyth, C.; Poupart, P.; and Brubaker,    Neural Information Processing Systems.
+M. 2019. Time2Vec: Learning a Vector Representation of           Yu, Z.; Chu, X.; Jin, Y.; Wang, Y.; and Zhao, J. 2024.
+Time. arXiv preprint arXiv:1907.05321.                           SMART: Towards Pre-trained Missing-Aware Model for Pa-
+Little, R. J. A. 1988. A Test of Missing Completely at Ran-      tient Health Status Prediction. Advances in Neural Informa-
+dom for Multivariate Data with Missing Values. Journal of        tion Processing Systems, 37: 63986–64009.
+the American Statistical Association, 83(404): 1198–1202.        Zhang, J.; Zheng, S.; Cao, W.; Bian, J.; and Li, J. 2023.
+Liu, Y.; Zhang, W.; Si, J.; Li, Z.; Peng, X.; and Lu, W. 2024.   Warpformer: A Multi-scale Modeling Approach for Irregu-
+Generating Personalized Imputations for Patient Health Sta-      lar Clinical Time Series. In Proceedings of the 29th ACM
+tus Prediction in Electronic Health Records. In 2024 IEEE In-    SIGKDD Conference on Knowledge Discovery and Data
+ternational Conference on Bioinformatics and Biomedicine         Mining, 3273–3285. Long Beach CA USA: ACM. ISBN
+(BIBM), 1048–1053. IEEE.                                         979-8-4007-0103-0.
+Miao, S.; Chen, L.; and Hu, R. 2024. Spatial-Temporal            Zhang, X.; Zeman, M.; Tsiligkaridis, T.; and Zitnik, M. 2021.
+Masked Autoencoder for Multi-Device Wearable Human               Graph-Guided Network for Irregularly Sampled Multivari-
+Activity Recognition. Proc. ACM Interact. Mob. Wearable          ate Time Series. In International Conference on Learning
+Ubiquitous Technol., 7(4): 172:1–172:25.                         Representations.
+

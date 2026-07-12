@@ -215,6 +215,9 @@ if __name__ == "__main__":
     parser.add_argument('--freeze_epochs', type=int, default=5)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--d_model', type=int, default=32)
+    parser.add_argument('--run-tag', type=str, default=None,
+                        help='Optional suffix appended to the model_name/save dir, '
+                             'e.g. "pmatch" for the parameter-matched backbone control.')
     parser.add_argument('--seed', type=int, default=3407)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num-workers', type=int, default=None,
@@ -269,6 +272,14 @@ if __name__ == "__main__":
                         help='Ablation: disable policy tokens in SMILE-Lean v2 embedder')
     parser.add_argument('--abl-no-dynamic-mnar', action='store_true', default=False,
                         help='Ablation: replace dynamic MNAR co-occurrence with static global co-occurrence')
+    parser.add_argument('--abl-random-bias', action='store_true', default=False,
+                        help='Control: replace per-sample co-missingness matrix with a '
+                             'magnitude-matched random-permuted bias (structure destroyed)')
+    parser.add_argument('--abl-global-comiss', action='store_true', default=False,
+                        help='Control: replace per-sample co-missingness matrix with a '
+                             'running cohort-prior matrix (a momentum EMA estimate, '
+                             'cross-rank aggregated under DDP; not the exact '
+                             'training-set average)')
     parser.add_argument('--abl-no-dual-head', action='store_true', default=False,
                         help='Ablation: use standard classifier instead of dual-head classifier')
     parser.add_argument('--smile-no-mnar', action='store_true', default=False)
@@ -305,6 +316,8 @@ if __name__ == "__main__":
         'no-mnar-cls': args.abl_no_mnar_cls,
         'no-policy': args.abl_no_policy,
         'no-dynamic-mnar': args.abl_no_dynamic_mnar,
+        'random-bias': args.abl_random_bias,
+        'global-comiss': args.abl_global_comiss,
         'no-dual-head': args.abl_no_dual_head,
     }
     _abl_suffix = '-'.join(k for k, v in _abl_flags.items() if v)
@@ -356,6 +369,8 @@ if __name__ == "__main__":
     else:
         from models.smart import Encoder
         model_name = 'smart'
+    if getattr(args, 'run_tag', None):
+        model_name = f'{model_name}-{args.run_tag}'
     args.save_dir = os.path.join(args.save_dir, args.dataset, model_name, f'seed_{args.seed}')
     distributed_init(args)
     configure_torch_runtime()

@@ -19,6 +19,11 @@ Usage examples:
 
     # Re-evaluate existing finetune checkpoints with validation-selected thresholds
     python run_all_experiments.py --eval-only
+
+    # Density-window sensitivity sweep (window=5 is the default smart-smile-lean)
+    python run_all_experiments.py \
+        --models smart-smile-lean smart-smile-lean-dw3 smart-smile-lean-dw7 smart-smile-lean-dw9 \
+        --datasets c12 c19
 """
 
 import argparse
@@ -50,21 +55,47 @@ ABLATION_MODELS = [
     'smart-smile-lean-no-mnar-bias',
     'smart-smile-lean-no-film',
 ]
+# Co-missingness diagnostic controls (P0-B): isolate structure from generic bias
+# capacity and cohort priors. Both keep the bias pathway on SMILE-Lean.
+CONTROL_MODELS = [
+    'smart-smile-lean-random-bias',
+    'smart-smile-lean-global-comiss',
+]
+# Parameter-matched backbone control: plain SMART backbone widened to strictly
+# exceed the SMILE-Lean parameter count (d_model 40 vs 32), same training budget
+# as the SMART baseline. Isolates capacity from the structured-missingness modules.
+PMATCH_MODELS = {
+    'smart-pmatch': 40,
+}
+# Density-window sensitivity sweep. Each variant is plain SMILE-Lean run with a
+# non-default --obs-density-window (window=5 is the default smart-smile-lean).
+# Window 1 degenerates to pure pointwise observation (lower bound); 3/7/9 probe
+# robustness to the local-density receptive field. Values must be odd.
+DENSITY_WINDOW_SWEEP = {
+    'smart-smile-lean-dw1': 1,
+    'smart-smile-lean-dw3': 3,
+    'smart-smile-lean-dw7': 7,
+    'smart-smile-lean-dw9': 9,
+}
 ALL_SEEDS = [1, 42, 3407]
 # Lean models use batch_size=64 and finetune_epochs=25 (same as smart baseline)
 # and save_best instead of save_last for pretrain checkpointing.
 _LEAN_MODELS = {'smart-smile-lean'}
 # Ablation models also use lean settings
-_LEAN_V1_ABLATION_MODELS = set(ABLATION_MODELS)
+_LEAN_V1_ABLATION_MODELS = set(ABLATION_MODELS) | set(CONTROL_MODELS)
 _LEAN_V2_ABLATION_MODELS = set()
-_LEAN_ABLATION_MODELS = set(ABLATION_MODELS)
+_LEAN_ABLATION_MODELS = set(ABLATION_MODELS) | set(CONTROL_MODELS)
 _LEAN_MODELS.update(_LEAN_ABLATION_MODELS)
+# Density-window sweep variants share all SMILE-Lean training settings.
+_LEAN_MODELS.update(DENSITY_WINDOW_SWEEP)
 
 # Map ablation model name -> list of --abl-* CLI flags
 _ABLATION_FLAGS = {
     'smart-smile-lean-no-density':                   ['--abl-no-density'],
     'smart-smile-lean-no-mnar-bias':                 ['--abl-no-mnar-bias'],
     'smart-smile-lean-no-film':                      ['--abl-no-film'],
+    'smart-smile-lean-random-bias':                  ['--abl-random-bias'],
+    'smart-smile-lean-global-comiss':                ['--abl-global-comiss'],
 }
 
 
@@ -180,10 +211,12 @@ def main():
                         help='Python executable used to launch training workers. '
                              'Defaults to SMART_PYTHON_EXECUTABLE env or the current interpreter.')
     parser.add_argument('--models', nargs='+', default=ALL_MODELS,
-                        choices=ALL_MODELS + ABLATION_MODELS,
+                        choices=ALL_MODELS + ABLATION_MODELS + CONTROL_MODELS
+                                + list(PMATCH_MODELS) + list(DENSITY_WINDOW_SWEEP),
                         metavar='MODEL',
                         help='Models to run. Available: ' + ', '.join(
-                            ALL_MODELS + ABLATION_MODELS))
+                            ALL_MODELS + ABLATION_MODELS + CONTROL_MODELS
+                            + list(PMATCH_MODELS) + list(DENSITY_WINDOW_SWEEP)))
     parser.add_argument('--datasets', nargs='+', default=ALL_DATASETS,
                         choices=ALL_DATASETS, metavar='DATASET')
     parser.add_argument('--seeds', nargs='+', type=int, default=ALL_SEEDS,
@@ -268,7 +301,17 @@ def main():
         _is_lean_v2_ablation = model in _LEAN_V2_ABLATION_MODELS
         use_smile_lean_v2_flag = ['--use-smile-lean-v2'] if model == 'smart-smile-lean-v2' or _is_lean_v2_ablation else []
         _is_lean_v1_ablation = model in _LEAN_V1_ABLATION_MODELS
-        use_smile_lean_flag              = ['--use-smile-lean']             if model in ('smart-smile-lean', 'smart-smile-lean-pmae') or _is_lean_v1_ablation else []
+        _is_density_window_sweep = model in DENSITY_WINDOW_SWEEP
+        use_smile_lean_flag              = ['--use-smile-lean']             if model in ('smart-smile-lean', 'smart-smile-lean-pmae') or _is_lean_v1_ablation or _is_density_window_sweep else []
+        # Non-default density-window forwarded to pretrain, finetune, and eval so
+        # the encoder is rebuilt with a matching receptive field at every stage.
+        density_window_flag = (['--obs-density-window', str(DENSITY_WINDOW_SWEEP[model])]
+                               if _is_density_window_sweep else [])
+        # Parameter-matched backbone control: widen plain SMART and tag its runs so
+        # checkpoints do not collide with the d_model=32 SMART baseline.
+        _is_pmatch = model in PMATCH_MODELS
+        pmatch_flag = (['--d_model', str(PMATCH_MODELS[model]), '--run-tag', 'pmatch']
+                       if _is_pmatch else [])
         use_smile_lean_samepretrain_flag = ['--use-smile-lean-samepretrain'] if model == 'smart-smile-lean-samepretrain' else []
         pmae_pretrain_flag               = ['--pretrain-mask-mode', 'proportional_var'] if model == 'smart-smile-lean-pmae' else []
         pretrain_model = pretrain_source_model(model)
@@ -280,6 +323,7 @@ def main():
                          'smart-smile-lean-v2',
                          'smart-smile-lean', 'smart-smile-lean-samepretrain', 'smart-smile-lean-pmae'}
         _lean_exclude.update(_ABLATION_FLAGS.keys())
+        _lean_exclude.update(DENSITY_WINDOW_SWEEP)
         use_smile_flag         = ['--use-smile']         if (model.startswith('smart-smile')
                                                              and model not in _lean_exclude) else []
         use_mnar_flag          = ['--use-mnar']          if model == 'smart-mnar'          else []
@@ -318,7 +362,7 @@ def main():
                 '--save_dir', args.export_root,
                 '--split-seed', str(args.split_seed),
                 '--eval-only',
-            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + arch_abl_extra
+            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + arch_abl_extra + density_window_flag + pmatch_flag
             ok = run_cmd(cmd, f'{tag_prefix} | EVALUATE', args.dry_run, env=launch_env)
             if not ok:
                 failed.append(f'{tag_prefix} evaluation')
@@ -346,7 +390,7 @@ def main():
                     '--batch_size', str(cur_batch_size),
                     '--save_dir', args.export_root,
                     '--split-seed', str(args.split_seed),
-                ] + save_last_flag + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pmae_pretrain_flag + arch_abl_extra
+                ] + save_last_flag + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pmae_pretrain_flag + arch_abl_extra + density_window_flag + pmatch_flag
                 if args.mask_group_config:
                     cmd.extend(['--mask-group-config', args.mask_group_config])
                 ok = run_cmd(cmd, f'{tag_prefix} | PRETRAIN', args.dry_run, env=launch_env)
@@ -375,7 +419,7 @@ def main():
                 '--batch_size', str(cur_batch_size),
                 '--save_dir', args.export_root,
                 '--split-seed', str(args.split_seed),
-            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pretrain_dir_flag + arch_abl_extra
+            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pretrain_dir_flag + arch_abl_extra + density_window_flag + pmatch_flag
             ok = run_cmd(cmd, f'{tag_prefix} | FINETUNE', args.dry_run, env=launch_env)
             if not ok:
                 failed.append(f'{tag_prefix} finetune')

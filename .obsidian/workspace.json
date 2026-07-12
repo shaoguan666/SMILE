@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "smile-paper/reviews/aaai27_fable_audit_2026-07-03.md",
+                "file": "SMILE-周报-2026-07-12.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "aaai27_fable_audit_2026-07-03"
+              "title": "SMILE-周报-2026-07-12"
             }
           }
         ]
@@ -183,13 +183,24 @@
       "bases:新建数据库": false
     }
   },
-  "active": "54a2a6d2886e4181",
+  "active": "f7833bce89658ff9",
   "lastOpenFiles": [
-    "smile-paper/build/appendix.bbl",
-    "smile-paper/build/appendix.blg",
-    "smile-paper/build/appendix.pdf",
-    "smile-paper/build/appendix.out",
-    "smile-paper/build/appendix.aux",
-    "smile-paper/build/appendix.log"
+    "smile-paper/build/main1.bbl",
+    "smile-paper/build/main1.blg",
+    "smile-paper/build/main1.pdf",
+    "smile-paper/build/main1.aux",
+    "smile-paper/build/main1.log",
+    "tmp/pdfs/main1_review/tail-8.png",
+    "tmp/pdfs/main1_review/tail-7.png",
+    "tmp/pdfs/main1_review/page-2.png",
+    "tmp/pdfs/main1_review/page-1.png",
+    "tmp/pdfs/main1_review",
+    "smile-paper/main1.aux",
+    "smile-paper/main1.log",
+    "run_all_experiments.py.tmp.24052.98c97dcb3be5",
+    "run_all_experiments.py.tmp.24052.7c8c882b6087",
+    "run_all_experiments.py.tmp.24052.79311d92ab9a",
+    "smile-paper/reviews/aaai27_fable_audit_2026-07-03.md",
+    "smile-paper/架构图草图.png"
   ]
 }

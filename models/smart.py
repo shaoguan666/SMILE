@@ -2,6 +2,7 @@ import math
 import numpy as np
 import torch
 import torch.utils.checkpoint
+import torch.distributed as dist
 from torch import nn
 import torch.nn.functional as F
 
@@ -1710,6 +1711,34 @@ class SMILELeanEncoder(nn.Module):
         self.abl_no_film = getattr(args, 'abl_no_film', False)
         self.abl_no_time_mnar = getattr(args, 'abl_no_time_mnar', False)
         self.abl_no_time_pe = getattr(args, 'abl_no_time_pe', False)
+        # Co-missingness diagnostic controls (P0-B). Both keep the bias pathway
+        # but replace the per-sample structured matrix, to separate structure
+        # from generic bias capacity / cohort priors.
+        self.abl_random_bias = getattr(args, 'abl_random_bias', False)
+        self.abl_global_comiss = getattr(args, 'abl_global_comiss', False)
+        if self.abl_random_bias:
+            # Fixed eval permutation, drawn deterministically from a fixed seed so it
+            # is identical across processes/runs (reproducible) and stable across
+            # forward passes. Registered non-persistent so it never enters the
+            # checkpoint: state_dict then matches code without this control, and
+            # finetune/resume can load checkpoints from ANY code version without a
+            # missing-key error. Training still draws a fresh random perm each step.
+            _perm_gen = torch.Generator().manual_seed(0)
+            self.register_buffer(
+                'rand_bias_perm',
+                torch.randperm(args.input_dim, generator=_perm_gen),
+                persistent=False,
+            )
+        if self.abl_global_comiss:
+            # Running cohort prior: a momentum EMA of the batch-mean co-missingness
+            # (BatchNorm-style), updated only in train mode and frozen at eval. This
+            # is a running ESTIMATE of the cohort average, not the exact training-set
+            # average; under DDP the batch mean is aggregated across ranks before the
+            # EMA update (see forward), so the buffer stays a genuine cross-rank
+            # cohort statistic rather than a per-rank shard estimate.
+            self.global_comiss_momentum = 0.99
+            self.register_buffer('global_comiss', torch.zeros(args.input_dim, args.input_dim))
+            self.register_buffer('global_comiss_ready', torch.zeros(1))
         # Embedder: density-aware or plain
         if self.abl_no_density:
             self.embedder = MLPEmbedder(args.d_model)
@@ -1759,6 +1788,42 @@ class SMILELeanEncoder(nn.Module):
         mnar_cooccur = None
         if not self.abl_no_mnar_bias and original_mask is not None:
             mnar_cooccur = self.mnar_cooccur_encoder(original_mask)  # (B, V, V)
+            if self.abl_random_bias:
+                # Control: preserve the exact value distribution and magnitude of
+                # the co-missingness bias but destroy its physiological structure,
+                # via a symmetric permutation of variable indices. A symmetric
+                # permutation only relabels rows/columns, so the multiset of matrix
+                # entries (hence magnitude and value distribution) is preserved.
+                # Training draws a fresh permutation each step; eval reuses a fixed
+                # permutation so metrics are deterministic and reproducible across
+                # forward passes. Tests whether the specific variable pairing
+                # matters or only the bias magnitude.
+                if self.training:
+                    perm = torch.randperm(mnar_cooccur.shape[1], device=mnar_cooccur.device)
+                else:
+                    perm = self.rand_bias_perm.to(mnar_cooccur.device)
+                mnar_cooccur = mnar_cooccur[:, perm][:, :, perm]
+            elif self.abl_global_comiss:
+                # Control: replace the per-sample matrix with a running cohort prior
+                # (frozen at eval) instead of a single-record signal. This is a
+                # running EMA estimate of the cohort average, not the exact
+                # training-set average. Under DDP the batch is sharded across ranks,
+                # so we all-reduce the batch mean to a global (cross-rank) batch mean
+                # before the EMA update; without this the buffer would only reflect
+                # the local rank's shard. Tests whether per-sample structure matters.
+                if self.training:
+                    batch_mean = mnar_cooccur.mean(dim=0).detach()
+                    if dist.is_available() and dist.is_initialized():
+                        dist.all_reduce(batch_mean, op=dist.ReduceOp.SUM)
+                        batch_mean.div_(dist.get_world_size())
+                    if self.global_comiss_ready.item() < 1:
+                        self.global_comiss.copy_(batch_mean)
+                        self.global_comiss_ready.fill_(1.0)
+                    else:
+                        m = self.global_comiss_momentum
+                        self.global_comiss.mul_(m).add_(batch_mean, alpha=1 - m)
+                mnar_cooccur = self.global_comiss.unsqueeze(0).expand(
+                    mnar_cooccur.shape[0], -1, -1).contiguous()
 
         x = torch.cat(
             (self.query.repeat(x.shape[0], 1, 1, 1), x), dim=2

@@ -1,0 +1,618 @@
+                                     The Fortieth AAAI Conference on Artificial Intelligence (AAAI-26)
+
+
+
+
+Beyond Missing Data Imputation: Information-Theoretic Coupling of Missingness
+     and Class Imbalance for Optimal Irregular Time Series Classiﬁcation
+     Xin Qin1 , Mengna Liu1 , Wenjie Wang1 , Shuxin Li1 , Tianjiao Li1 , Xiufeng Liu2 , Xu Cheng1 *
+                         1
+                       School of Computer Science and Technology, Tianjin University of Technology.
+                  2
+                Department of Technology, Management and Economics, Technical University of Denmark.
+ xin.qin@ieee.org, liumengna@stud.tjut.edu.cn, wenjiewang@stud.tjut.edu.cn, lsxtjut@stud.tjut.edu.cn, litianjiao@ieee.org,
+                                            xiuli@dtu.dk, xu.cheng@ieee.org
+
+
+                             Abstract                                                                       missing                   (a)
+                                                                                                           processing
+                                                                                   missing value
+  Irregular time series (IRTS) are prevalent in real-world ap-                                            imbalanced
+                                                                                    class imbalance         handling
+  plications, where uneven sampling and missing data pose
+  fundamental challenges to deep learning-based feature mod-                                                                          (b)
+  eling. Although existing methods attempt to retain times-
+  tamp information, they often overlook the structured pat-
+  terns embedded within the missingness itself, and tend to
+
+
+
+
+                                                                                                              …
+  perform poorly when confronted with class imbalance ex-
+  acerbated by data incompleteness. Speciﬁcally, temporal ir-
+  regularity hinders the modeling of long-range dependencies                Figure 1: Conceptual comparison of decoupled vs. coupled
+  and local patterns, while sparse observations limit representa-           modeling for missing values and class imbalance. (a) De-
+  tional capacity, disproportionately impairing minority classes            coupled methods address these problems separately, result-
+  and leading to severe classiﬁcation bias. To address these                ing in a poorly separated feature space. (b) Our coupled ap-
+  deeply coupled challenges, we propose SPECTRA (Struc-
+  tured Pattern and Enriched Context-aware Temporal Repre-
+                                                                            proach, based on the “Missing-Imbalance Coupling Theo-
+  sentation Architecture), a uniﬁed framework for robust IRTS               rem”, jointly learns class-aware representations, yielding a
+  classiﬁcation. SPECTRA introduces a frequency-guided ob-                  highly discriminative space.
+  servation encoder that reconstructs temporal dependencies
+  in a stable manner, mitigating spectral distortion and infor-
+  mation corruption. Complementarily, a missingness pattern                 lated with class frequency. This coupling is particularly se-
+  encoder explicitly captures the dynamic evolution of miss-                vere in high-stakes domains, such as clinical event predic-
+  ing data and leverages it as a discriminative signal. In addi-
+  tion, a prototype-constrained classiﬁcation paradigm directly
+                                                                            tion, where minority classes signifying critical events suffer
+  optimizes the geometric structure of the feature space, en-               from a dual information deﬁcit—being both rare and more
+  hancing intra-class compactness and alleviating generaliza-               incomplete (Cheng et al. 2024).
+  tion bottlenecks caused by class imbalance. Extensive ex-                    Under MAR conditions, the missingness probability satis-
+  periments on three public IRTS datasets—P12, P19, and                     ﬁes P (M|Xobs , Xmiss , Y ) = P (M|Xobs , Y ), creating a di-
+  PAM—demonstrate the superior performance of SPECTRA                       rect dependency between class labels and missingness pat-
+  under both missing and imbalanced conditions.                             terns. This dependency is empirically validated across our
+                                                                            experimental datasets, where we observe signiﬁcant mutual
+                        Introduction                                        information I(Y ; M) > 0 (detailed analysis in Appendix
+                                                                            (Section 1.2)).
+Learning from irregular time series (IRTS) is a persistent
+                                                                               Our theoretical foundation rests on formalizing this cou-
+challenge in machine learning, critically compounded by the
+                                                                            pling. We demonstrate that the mutual information between
+co-occurrence of missing data and class imbalance (Tipir-
+                                                                            class labels (Y ) and missingness patterns (M), I(Y ; M), is
+neni and Reddy 2022; Liu et al. 2021b). While conventional
+                                                                            signiﬁcantly non-zero, indicating that knowledge of a sam-
+methods treat these as separable issues, we posit this view is
+                                                                            ple’s missingness pattern reduces uncertainty about its class.
+fundamentally incomplete. We identify and formalize an in-
+                                                                            This insight reveals why current architectures fail: they are
+trinsic link, which we term Missing-Imbalance Coupling: a
+                                                                            predicated on an independence assumption that does not
+systematic dependency prevalent under realistic Missing At
+                                                                            hold, as shown in Figure 1. This ﬂawed premise gives rise
+Random (MAR) and Missing Not At Random (MNAR) data
+                                                                            to three fundamental and interconnected challenges that cur-
+generation processes, where the patterns of missingness con-
+                                                                            rent methods are ill-equipped to solve:
+tain class-discriminative information that is inversely corre-
+    * Corresponding author.                                                   • Irrecoverable Spectral Distortion: Irregular sampling
+Copyright © 2026, Association for the Advancement of Artiﬁcial                  causes spectral leakage and aliasing, with Missing-
+Intelligence (www.aaai.org). All rights reserved.                               Imbalance Coupling concentrating distortions in mi-
+
+
+                                                                    24945
+     nority classes. Recent studies (Zhang et al. 2023; Zheng            els (Wang et al. 2023; Biloš et al. 2023)), continuous-time
+     et al. 2024; Li, Li, and Yan 2024; Liu, Cao, and Chen               modeling (e.g., Neural ODEs, Contiformer (Chen et al.
+     2024) have employed the zero-ﬁlling method to address               2024)), and direct structure-aware modeling (e.g., GRU-D
+     irregularities; however, this approach can obscure sub-             (Che et al. 2018), Raindrop (Zhang et al. 2022), ViTST (Li,
+     tle spectral signatures that are critical for identifying           Li, and Yan 2024), MTS-Former (Zheng et al. 2024)). While
+     rare events.                                                        these approaches have made notable advances, continuous-
+                                                                         time models often assume smooth dynamics and perform
+  • Minority Representation Collapse: Higher missing-                    poorly with abrupt missingness, whereas direct structure-
+    ness rates in minority classes produce weak feature                  aware models typically use zero-ﬁlling, potentially mask-
+    vectors with low signal-to-noise ratios. These incom-                ing subtle spectral cues vital for detecting rare events. Our
+    plete representations are dominated by stronger ma-                  method addresses these limitations by explicitly modeling
+    jority class signals, leading to representational col-               the coupling between missingness patterns and class infor-
+    lapse where minority samples become indistinguish-                   mation.
+    able from noise.
+                                                                         Methods for Imbalanced Time Series Classiﬁcation
+  • Biased Optimization Dynamics: Combined data                          Class imbalance methods fall into three categories: data-
+    scarcity and signal corruption create biased optimiza-               level (oversampling via SMOTE (Chawla et al. 2002) and
+    tion landscapes. Minority class gradients are infre-                 variants (Maldonado et al. 2022; Liu et al. 2023; Qian
+    quent, unreliable, and small-magnitude, causing rapid                and Li 2022; Islam et al. 2022), undersampling (Soltan-
+    convergence to degenerate solutions that ignore minor-               zadeh, Feizi-Derakhshi, and Hashemzadeh 2023; Yan et al.
+    ity classes entirely.                                                2022)), algorithm-level (cost-sensitive learning (Xie et al.
+   To overcome these deeply rooted challenges, we in-                    2020), active learning (Liu et al. 2021a)), and ensemble ap-
+troduce SPECTRA (Structured Pattern and Enriched                         proaches (Bagging, Boosting, GAN-based methods (Ding
+Context-aware Temporal Representation Architecture).                     et al. 2023; Johnson and Khoshgoftaar 2022)). However,
+SPECTRA is a uniﬁed framework engineered to directly                     these methods struggle with coupled imbalance-temporal
+model and resolve the Missing-Imbalance Coupling through                 heterogeneity challenges in time series.
+three synergistic innovations: 1) A Missingness-Aware Fre-
+quency Filtering (MAFF) module that uses the missing-                                              Method
+ness pattern to guide an adaptive restoration of the spec-               Problem Formulation and Theoretical Foundation
+tral domain, counteracting class-conditional distortion. 2)              We formalize the irregular time series classiﬁcation problem
+A Missingness Pattern Encoder (MPE) that treats the                      under coupled missing-imbalance conditions. The dataset
+missingness pattern as an explicit information source, en-                                             N
+                                                                         D = (X(n) , M(n) , y (n) ) n=1 consists of N samples,
+riching the feature representation to prevent representa-
+tional collapse. 3) A Category-Guided Feature Reﬁne-                     where X(n) ∈ RC×L denotes multivariate time series with
+                                                                         C channels and maximum length L, M(n) ∈ {0, 1}
+                                                                                                                                      C×L
+ment (CGFR) module that employs a prototype-based ob-
+                                                                                                                  (n)
+jective to create a protected, stable feature space for each             is the binary missingness mask (Mc,t = 1 (observed), 0
+class, resisting biased gradient dynamics.                               (missing)), and y (n) ∈ {1, . . . , K} is the class label.
+   Our contributions are: (1) We establish the ﬁrst                         Missing-Imbalance Coupling Theory: We deﬁne the
+information-theoretic framework for the Missing-Imbalance                coupling strength as κ = maxi,j |I(Y = i; M) − I(Y =
+Coupling in irregular time series, providing formal deﬁ-                 j; M)|, where I(Y = k; M) is the mutual information
+nitions, fundamental limits, and optimality guarantees. (2)              between class k and missingness patterns. Under realistic
+We propose SPECTRA, a novel architecture that prov-                      MAR conditions with class-dependent observation probabil-
+ably achieves information-theoretic optimality for coupled               ities, we prove κ > 0, establishing that missingness patterns
+missing-imbalance scenarios through principled spectral                  contain class-discriminative information (formal proof in the
+reconstruction and geometric prototype learning. (3) We                  Appendix (Theorem 1.1)).
+provide extensive empirical validation across diverse do-                   Theoretical Framework Integration: Our theory con-
+mains, demonstrating consistent improvements with theoret-               nects three key results: (1) Coupling Theory establishes κ >
+ical convergence and robustness properties validated experi-             0, (2) Spectral-Temporal Duality (Appendix (Theorem 2))
+mentally.                                                                shows how coupling manifests in frequency domain, and (3)
+                                                                         Information-Geometric Learning (Appendix (Section 7.2))
+                     Related Work                                        provides optimal algorithms. Together, these form a uniﬁed
+Modeling Methods for Irregular Time Series                               mathematical foundation.
+                                                                            Fundamental Limits: We establish that any classiﬁer op-
+IRTS modeling methods can be grouped into three cat-                     erating under coupling strength κ has minimum achievable
+egories: indirect modeling via interpolation (e.g., RNN-                 error rate bounded by:
+(Cao et al. 2018; Yoon, Zame, and van der Schaar 2018),
+Transformer- (Du, Côté, and Liu 2023; Shan, Li, and Oliva                                                                   
+2023), VAE- (Mulyadi, Jun, and Suk 2021; Kim et al. 2023),                         ∗   1           I(X, M; Y ) − κ · H(M)
+                                                                                 R ≥       1−                                       . (1)
+GAN- (Luo et al. 2018, 2019), and diffusion-based mod-                                 2                       H(Y )
+
+
+                                                                 24946
+                                                                                                         （D）6&6(                                                    （F）03(
+                                                                                   ')7
+
+
+
+
+                                                                                                                 6SHFWUXP7HQVRU
+                                                          7HPSRUDO7HQVRU
+                                                                                                                                                 S
+
+
+                                                                                            0DJQLWXGH6SHFWUXP
+            6&6(
+                                                                                                                                                  T
+          $*'55                                                            ORZZHLJKWV            ORZPDVN
+                                                                                                                                          +RZLVLWPLVVLQJ"
+                                                                                                                                          ,QWHUPLWWHQW"
+                                        03(                                 EDQGZHLJKWV          EDQGPDVN                               &RQWLQXRXV"
+                                                                                                                                          /RZIUHTXHQF\"
+                                                                                                                                          +LJKIUHTXHQF\"
+                                    S            T                          KLJKZHLJKWV          KLJKPDVN
+       6HOIDWWHQWLRQ
+
+                           &RQFDW                                                                    （E）$*'55                                                    （G）&*)5
+
+                           &*)5
+
+
+
+
+    S 6LJPRLGIXQFWLRQ$GGLWLRQRSHUDWLRQ
+                                                                                                                                   ,QHGJHSURWRW\SH2XWHGJHSURWRW\SHH
+    T 7DQKIXQFWLRQ    0XOWLSOLFDWLRQRSHUDWLRQ                                                                            &OXVWHULQJFHQWHU &RQYHUJHQFHGLUHFWLRQ
+
+
+                                                                Figure 2: The framework of our approach.
+
+
+  The learning objective is to ﬁnd fθ : RC×L ×                                             as noise, MAFF leverages missingness-induced perturba-
+{0, 1}C×L → ΔK−1 that minimizes expected risk                                              tions as structured information for classiﬁcation, enabling
+R(fθ ) = E[(fθ (X, M), y)] while approaching the funda-                                   principled spectral reconstruction while preserving class-
+mental limit. Complete mathematical foundations are pro-                                   discriminative patterns. Complete theoretical analysis are in
+vided in the Appendix (Sections 1-2).                                                      the Appendix (Section 3).
+
+Overview                                                                                   Self-Calibrating Spectral Enhancement (SCSE): SCSE
+                                                                                           implements optimal spectral reconstruction through adap-
+The overall architecture of the proposed SPECTRA model                                     tive spectral attention that preserves information-theoretic
+is illustrated in Figure 2. The model adopts a dual-stream                                 optimality. Unlike ﬁxed-frequency ﬁltering, SCSE learns
+structure to jointly model observed data and missingness                                   content-aware, class-sensitive spectral weights by maximiz-
+patterns, aiming to enhance classiﬁcation robustness under                                 ing mutual information between reconstructed signals and
+irregular sampling and class imbalance conditions.                                         class labels. Formal deﬁnitions and theoretical properties are
+   SPECTRA consists of three main modules: The missing                                     in the Appendix (Deﬁnitions 5-6). Speciﬁcally, given an in-
+pattern encoder models the temporal structure of the miss-                                 put sequence X, we ﬁrst extract a global context vector w
+ing mask M and extracts the missing evolution features;                                    using global average pooling (GAP):
+The adaptive frequency domain encoder processes the ob-
+served values X using a frequency-guided ﬁltering mecha-
+                                                                                                                                                   1
+                                                                                                                                                        L
+nism to alleviate spectral distortion and extract stable fea-
+                                                                                                              w = GAP (X) =                              Xi ,                        (2)
+tures through missing-aware convolution; The metric-based                                                                                          L i=1
+classiﬁcation head, based on the dynamic fusion of miss-
+ing features and observed features, introduces the category                                   subsequently, w is input into a multi-layer perceptron
+center constraint, causing the sample features to converge to                              (MLP) to generate three-dimensional attention probability
+the category centers, enhancing the intra-class compactness                                values l = [l1 , ..., lK ] = M LP (w), and then normal-
+and inter-class separability, and improving the discrimina-                                ized through Softmax to obtain the frequency band attention
+tion ability for minority categories.                                                      weights αk .
+
+Missingness-Aware Frequency Filtering Module                                                                 e lk
+(MAFF)                                                                                                 αk = K                              k = {1, 2, ..., K} ,                     (3)
+                                                                                                                                    lj
+                                                                                                                           j=1 e
+The Missingness-Aware Frequency Filtering (MAFF) mod-
+ule implements our Spectral-Temporal Duality Principle.                                    set K = 3, corresponding to the low, medium and high fre-
+Unlike existing approaches that suppress spectral distortion                               quency bands respectively. This normalization introduces
+
+
+                                                                                  24947
+a competition mechanism between frequency bands, com-                              kernels, dynamically enlarging the receptive ﬁeld to ag-
+pelling the model to make a relative judgment on the alloca-                       gregate distant observations and build information bridges
+tion of signal energy.                                                             across missing segments. In this way, AG-DRR elevates the
+   Next, deﬁne K ﬁxed binary frequency masks Mk . These                            binary missingness mask from a passive indicator to an ac-
+are combined with the attention weights to produce a                               tive control signal for feature learning. It not only avoids fea-
+sample-speciﬁc ﬁltering mask Madapt :                                              ture contamination from zero-padding but also endows the
+                                                                                   model with intrinsic fault-tolerant capacity.Together, SCSE
+                                    
+                                    K
+                                                                                   and AG-DRR form a dual-adaptive core for robust temporal
+                       Madapt =           α k Mk ,                   (4)           representation learning in our model.
+                                    k=1
+this mask is multiplied point-by-point with the frequency                          Missingness Pattern Encoder (MPE)
+spectrum F (X) of the original signal to achieve ﬁltering.                         The MPE module represents a fundamental shift in how ma-
+Finally, through the inverse Fourier transform F −1 , the re-                      chine learning systems handle missing data. Instead of treat-
+sult is returned to the time domain, and the enhanced feature                     ing missingness as a nuisance to be overcome, MPE recog-
+representation X is obtained:                                                      nizes missingness patterns as a ﬁrst-class information source
+                                                                                  that carries structured, class-discriminative signals essential
+              X = F −1 ((F (X)  Madapt )).             (5)                        for optimal classiﬁcation.
+  This module automatically adjusts ﬁltering strategy: em-                            This approach is grounded in our Missing-Imbalance
+phasizing low/mid-frequency components for periodic sig-                           Coupling Theory, which proves that missingness patterns
+nals with local noise, or suppressing high-frequency compo-                        contain irreplaceable information about class membership.
+nents under high disturbance/missing data conditions.                              MPE implements an algorithm that explicitly maximizes the
+Absence-Guided Dynamic Receptive Field Restructur-                                 mutual information I(Y ; M) between class labels and miss-
+ing (AG-DRR): AG-DRR introduces a principled solu-                                 ingness patterns, achieving provable information-theoretic
+tion to the fundamental challenge of convolutional feature                         optimality.
+extraction under irregular missingness. The key insight is                            The key innovation is the recognition that missingness
+that optimal receptive ﬁeld conﬁguration must adapt dynam-                         patterns exhibit temporal coherence and semantic structure
+ically to local information density, implementing what we                          that can be learned and exploited. MPE introduces two key
+term Information-Adaptive Convolution.                                             components that work synergistically to extract this hidden
+   This represents a shift from ﬁxed architectural designs to                      information. The mathematical formulation is provided in
+meta-learning-based dynamic architectures that reconﬁgure                          the Appendix (Deﬁnition 9, Theorem 3).
+themselves based on the local information-theoretic prop-                             Gated Perception of Local Missingness Motifs: The
+                                                                                                                                  L×D
+erties of the input. AG-DRR implements a convolution op-                           original binary missing mask M n ∈ {0, 1}           is discrete
+eration that provably maintains information-theoretic opti-                        and sparse in terms of information representation. To extract
+mality under arbitrary missingness patterns. The theoretical                       meaningful local structures from it, we employ a gated con-
+analysis are provided in the Appendix (Deﬁnition 7-8).                             volutional unit. The mathematical formulation is detailed in
+   The core lies in a meta-learning controller that takes                          the Appendix (Deﬁnition 10). This unit does not perform
+the density of local missingness as input, and we call it                          standard feature transformation but acts as a mode selector.
+weight generator. This controller generates a dynamic and                          Its internal dual-path design - the feature candidate path and
+normalized weight distribution βt ∈ RK for each time step                          the gating path - constitutes an adaptive nonlinear ﬁltering
+t, which acts on the parallel convolution kernel clusters.                         mechanism:
+Speciﬁcally, for each time step t, we calculate the missing
+rate mt within its neighborhood, and input this into the con-
+troller:                                                                           Hlocal = tanh(Wcand ∗M +bcand )σ(Wgate ∗M +bgate ),
+                                                                                                                                             (8)
+                                                                                   here, the tanh path generates potential feature candidates,
+               em̄t,k                                                              while the sigmoid path learns the importance mask. The
+      βt,k = K           , where m̄t = M LP (mt ).                  (6)
+                    m̄t,j
+              j=1 e                                                                two are combined through element-wise multiplication to
+                                                                                   achieve dynamic feature selection, which can not only high-
+  Ultimately, the output feature Yt at time step t is the
+                                                                                   light the discriminative patterns such as continuous missing
+weighted sum of all the parallel convolution outputs:
+                                                                                   of key variables, but also suppress the noise-like missing.
+                             k−1                                                 Finally, a local feature map Hlocal with enhanced semantic
+              
+              K                                                                   characteristics is output.
+       Yt =         βt,k ·                       
+                                    W (k) [i] · Xt+i−k/2       .   (7)              Global Temporal Modeling of Missingness Dynamics:
+              k=1             i=0                                                  The local feature sequence Hlocal is input into the GRU
+   This mechanism achieves dynamic receptive ﬁeld restruc-                         network to capture the temporal dependence of the miss-
+turing: In information-dense regions, the controller learns                        ing patterns. This module, by modeling the evolution pro-
+to focus the weights on low-dilation kernels, enabling high-                       cess of the underlying observation strategies, possesses dual
+resolution local feature extraction. In information-sparse re-                     capabilities: it can distinguish between different patterns
+gions, the controller shifts attention toward high-dilation                        such as intermittent/rhythmic missing and sudden/contin-
+
+
+                                                                           24948
+                                                P12                        P19                                 PAM
+               Methods
+                                          AUC         AUPR         AUC           AUPR     Accuracy     Precision   Recall      F1 Score
+      Transformer (Vaswani 2017)        83.3 ±0.7   47.9 ±3.6     80.7 ±3.8 42.7 ±7.7     83.5 ±1.5    84.8 ±1.5   86.0 ±1.2   85.0 ±1.3
+      Trans-Mean (Vaswani 2017)         82.6 ±2.0   46.3 ±4.0     83.7 ±1.8 45.8 ±3.2     83.7 ±2.3    84.9 ±2.6   86.4 ±2.1   85.1 ±2.4
+        GRU-D (Che et al. 2018)         81.9 ±2.1   46.1 ±4.7     83.9 ±1.7 46.9 ±2.1     83.3 ±1.6    84.6 ±1.2   85.2 ±1.6   84.8 ±1.2
+    IP-Net (Shukla and Marlin 2019)     82.6 ±1.4   47.6 ±3.1     84.6 ±1.3 38.1 ±3.7     74.3 ±3.8    75.6 ±2.1   77.9 ±2.2   76.6 ±2.8
+        SeFT (Horn et al. 2020)         73.9 ±2.5   31.1 ±4.1     81.2 ±2.3 41.9 ±3.1     67.1 ±2.2    70.0 ±2.4   68.2 ±1.5   68.5 ±1.8
+       MTGNN (Wu et al. 2020)           74.4 ±6.7   35.5 ±6.0     81.9 ±6.2 39.9 ±8.9     83.4 ±1.9    85.2 ±1.7   86.1 ±1.9   85.9 ±2.4
+   mTAND (Shukla and Marlin 2021)       84.2 ±0.8   48.2 ±3.4     84.4 ±1.3 50.6 ±2.0     74.6 ±4.3    74.3 ±4.0   79.5 ±2.8   76.8 ±3.4
+       DGM 2 -O (Wu et al. 2021)        83.8 ±0.6   48.4 ±2.5     85.9 ±3.9 41.8 ±10.3    82.4 ±2.3    85.2 ±1.2   83.9 ±2.3   84.3 ±1.8
+      Raindrop (Zhang et al. 2022)      82.8 ±1.7   44.0 ±3.0     87.0 ±2.3 51.8 ±5.5     88.5 ±1.5    89.9 ±1.5   89.9 ±0.6   89.9 ±1.0
+    WarpFormer (Zhang et al. 2023)      83.5 ±1.9   45.1 ±3.5     87.7 ±3.2 53.4 ±6.4     93.5 ±1.0    94.5 ±0.9   94.0 ±0.9   94.2 ±0.8
+     ContiFormer (Chen et al. 2024)     81.2 ±0.8   43.9 ±3.0     79.2 ±2.3 35.8 ±2.3     89.0 ±1.0    90.0 ±0.8   91.0 ±0.9   90.2 ±0.8
+     MTSFormer (Zheng et al. 2024)      84.9 ±1.4   51.1 ±3.7     88.8 ±1.5 57.7 ±4.4     96.8 ±0.9    97.3 ±0.8   96.9 ±0.6   97.1 ±0.7
+      ViTST (Li, Li, and Yan 2024)      85.1 ±0.8   51.1 ±4.1     89.2 ±2.0 53.1 ±3.4     95.8 ±1.3    96.2 ±1.3   96.1 ±1.1   96.5 ±1.2
+  MuSiCNet (Liu, Cao, and Chen 2024)    86.1 ±0.4   54.1 ±2.2     86.8 ±1.4 45.4 ±2.7     96.3 ±0.7    96.9 ±0.6   96.9 ±0.5   96.8 ±0.5
+           SPECTRA(Ours)                86.3 ±0.9   54.4 ±3.5     90.0 ±2.0 59.4 ±5.4     97.7 ±0.2    98.2 ±0.2   97.7 ±0.1   98.0 ±0.1
+
+               Table 1: Performance comparison with existing methods on general IRTS classiﬁcation datasets.
+
+
+uous missing; and it can accurately capture the duration                  with feature vector z is deﬁned as the negative squared Eu-
+and occurrence frequency of state transition processes like               clidean distance to the corresponding class prototype:
+“connection-disconnection-reconnection”.
+   The ﬁnal output hidden state Fmiss is a high-dimensional                                logitk (z) = −z − ck 2 ,                  (9)
+embedding representation of the missing mechanism, en-                    this formulation transforms classiﬁcation into a nearest-
+coding the deep semantic information of “the reasons for                  prototype query, yielding a robust and geometrically con-
+data missing”. In the subsequent feature fusion stage, Fmiss              sistent decision boundary.
+can dynamically compensate for the semantic absence of
+                                                                             The overall training objective combines cross-entropy
+the observed data, thereby signiﬁcantly improving the robust
+                                                                          loss with a prototype-based regularization term:
+performance of the model in extreme scenarios.
+                                                                                          Ltotal = LCE + γLcenter ,                   (10)
+Category-Guided Feature Reﬁnement (CGFR)
+                                                                                                      1 
+                                                                                                          N
+Before classiﬁcation, the model generates two semantically                               Lcenter =          zi − cyi 22 ,           (11)
+complementary feature streams: Fdata capturing observed                                               N i=1
+content and Fmiss representing the inferred missing con-
+text. These are adaptively fused via a time-varying attention             here, LCE promotes correct classiﬁcation, while Lcenter
+gate to obtain a uniﬁed representation Ff used , which dynam-             encourages intra-class compactness by minimizing the dis-
+ically balances the reliability of each stream across time. The           tance between each sample and its class prototype.
+optimal fusion theory are detailed in the Appendix (Section                  By jointly optimizing for separability and compactness,
+6, Deﬁnition 12, Theorem 4-6).                                            CGFR induces a well-structured and discriminative embed-
+   The fused representation is then passed to the Category-               ding space, improving both robustness and generalization.
+Guided Feature Reﬁnement (CGFR) module, which intro-                      Theoretical analyses are provided in Appendix Section 9
+duces a novel classiﬁcation paradigm grounded in infor-                   (Theorems 7–11).
+mation geometry. Unlike traditional classiﬁers that operate
+in Euclidean space, CGFR performs classiﬁcation on the                                         Experiments
+information-geometric manifold, enabling it to directly ad-               This section presents a systematic evaluation of the pro-
+dress the coupled challenges of missing data and class im-                posed model, comparing it against several mainstream
+balance through principled geometric optimization.                        baseline methods on three widely used public time-
+   The key insight is that conventional classiﬁers are inher-             series datasets. To assess the model’s robustness to miss-
+ently limited under such conditions due to misaligned geom-               ing data, we simulate real-world scenarios by introduc-
+etry. CGFR instead learns class prototypes within a Rieman-               ing varying levels of missingness. In addition, we con-
+nian manifold where the Fisher Information Metric deﬁnes                  duct detailed ablation studies to quantify the contribution
+the natural distance. This yields a classiﬁer with provable               of each component. The experimental results empirically
+convergence guarantees and optimal calibration properties,                validate the theoretical properties established in the Ap-
+even under severe degradation of input quality. The mathe-                pendix (Section 11). Implementation code is available at
+matical formulation is provided in the Appendix (Section 8,               https://github.com/qinxin8021/SPECTRA.
+Deﬁnitions 13–14). Formally, CGFR maintains a learnable                      Computational Complexity: SPECTRA’s forward pass
+prototype vector ck for each class k. The logit of a sample               complexity is O(CL log L + CL · K + d2h + K · dh ),
+
+
+                                                                  24949
+                             (a) P12                                                               (b) P19
+
+
+
+
+                                                              (c) PAM
+
+                                       Figure 3: Leave-Random-Sensor-Out experiment results.
+
+
+where CL log L (FFT operations) dominates for large se-                   0.001 for all datasets, rejecting MCAR) and pattern anal-
+quences, CL · K (dilated convolutions) scales with channels               ysis. Chi-square tests conﬁrm signiﬁcant dependence be-
+and kernels, d2h (fusion operations) is quadratic in hidden di-           tween missingness patterns and observed variables (χ2 =
+mensions, and K · dh (prototype computations) scales with                 847.3, 1203.7, 234.5 for P12, P19, PAM respectively), sup-
+classes. Memory requirements O(CL+d1 +d2 +dh +K·dh )                      porting MAR conditions. Missing pattern entropy analysis
+scale linearly, making SPECTRA practical for large-scale                  shows structured (non-random) missingness consistent with
+deployment. Empirically, SPECTRA processes 1000-length                    MAR assumptions.
+sequences in 23ms on RTX 4090, matching Transformer                         Implementation Details. Our experiments are conducted
+speed with stronger theoretical guarantees.                               on Pytorch 1.13.1 platform with NVIDIA RTX 4090 GPU.
+                                                                          The optimizer used was AdamW, with weight decay set to
+Experimental Setup and Coupling Validation                                1e-3. The learning rate was adjusted for different datasets,
+Datasets and metrics. We evaluate our approach on three                   and the speciﬁc parameter settings are detailed in Appendix.
+public IRTS datasets: P12 (Citi and Barbieri 2012), P19
+(Reyna et al. 2020), and PAM (Reiss and Stricker 2012),                   Comparison with State-of-the-Arts
+with details summarized in Appendix. Following prior work,                Table 1 shows SPECTRA achieves SOTA performance
+we use 5-fold cross-validation, splitting each dataset into               across all datasets. Baseline models are introduced in Ap-
+training, validation, and test sets (8:1:1). For the imbalanced           pendix. On P12/P19, we achieve 0.23%/0.9% AUC and
+binary tasks (P12 and P19), we report the area under the                  0.55%/2.95% AUPR improvements respectively. On PAM,
+receiver operating characteristic curve (AUC) and the area                SPECTRA outperforms all baselines by 0.93%, 0.92%,
+under the precision-recall curve (AUPR). For the multiclass               0.83%, and 0.93% in accuracy, precision, recall, and F1.
+PAM dataset, we use Accuracy, Precision, Recall, and F1                   While methods like MTS-Former utilize missing masks,
+Score.                                                                    they suffer from distortion interference when acting on orig-
+   Empirical Validation of Missing-Imbalance Coupling:                    inal signals. WarpFormer and MuSiCNet treat missing data
+We validate our theoretical coupling hypothesis by com-                   as interference rather than information, limiting structural
+puting mutual information I(Y ; M) across all datasets.                   modeling potential. ViTST’s image conversion creates in-
+Results show signiﬁcant coupling: P12 (I(Y ; M) =                         valid regions in sparse data, disrupting variable interac-
+0.142), P19 (I(Y ; M) = 0.089), and PAM (I(Y ; M) =                       tions. SPECTRA systematically addresses these limitations
+0.067), conﬁrming that missingness patterns contain class-                through multi-dimensional fusion of missing mechanisms
+discriminative information. The coupling strength κ varies                and temporal dynamics.
+from 0.034 (PAM) to 0.098 (P12), validating our theoretical
+foundation that κ > 0 under realistic conditions.                         Leave-Random-Sensor-Out Experiment
+   MAR/MCAR Assumption Validation: We empirically                         To evaluate robustness under sensor failures, we randomly
+validate MAR assumptions using Little’s MCAR test (p <                    removed sensor channels (0.1-0.5 missing rates) in valida-
+
+
+                                                                  24950
+                                          P12                                    P19                                             PAM
+           Methods
+                                AUC                      AUPR          AUC              AUPR          Accuracy       Precision          Recall       F1 Score
+        w/o MPE              84.8 ±0.8              50.7 ±2.9       86.9 ±2.4          51.0 ±4.3      97.6 ±0.4      98.1 ±0.3         97.7 ±0.4     97.9 ±0.3
+       w/o SCSE              86.2 ±1.1              54.3 ±3.7       90.0 ±1.7          58.5 ±3.9      97.2 ±0.5      97.9 ±0.4         97.4 ±0.4     97.6 ±0.3
+      w/o AG-DRR             86.0 ±1.0              53.6 ±3.2       89.7 ±1.6          58.1 ±5.1      97.2 ±0.5      97.6 ±0.5         97.5 ±0.5     97.5 ±0.5
+       w/o MAFF              85.8 ±1.1              53.9 ±3.3       87.7 ±3.5          54.7 ±5.7      85.0 ±1.2      87.9 ±1.3         86.2 ±1.4     86.9 ±1.3
+       w/o CGFR              81.4 ±2.9              44.6 ±4.5       89.6 ±2.1          49.6 ±8.7      96.9 ±0.8      97.9 ±0.5         96.9 ±0.8     97.2 ±0.6
+          Full               86.3 ±0.9              54.4 ±3.5       90.0 ±2.0          59.4 ±5.4      97.7 ±0.2      98.2 ±0.2         97.7 ±0.1     98.0 ±0.1
+
+                                                         Table 2: Ablation study of our on three IRTS datasets.
+
+
+tion/test sets while keeping training sets intact.                                             ing rates. In contrast, the SCSE and AG-DRR modules have
+   Figure 3 shows SPECTRA consistently outperforms base-                                       a relatively small impact on overall performance when re-
+lines across all missing rates. Our frequency-guided ﬁltering                                  moved separately, which might be due to their functional
+and missing-aware convolution effectively suppress spectral                                    complementarity in structural modeling and dynamic fea-
+disturbances from sensor failures, while CGFR alleviates                                       ture extraction. However, when both modules were removed
+overﬁtting, signiﬁcantly enhancing robustness.                                                 simultaneously, the performance dropped signiﬁcantly, indi-
+                                                                                               cating that SCSE and AG-DRR have a synergistic gain in
+                      Linear_Classifier             60           Linear_Classifier             modeling local structures and temporal dynamics, and are
+          90
+                      ClusterFilter
+                                                    55
+                                                                 ClusterFilter                 key components for maintaining the stability of the model.
+ AUC(%)
+
+
+
+
+                                           AUC(%)
+
+
+
+
+          86                                                                                   In summary, each module has played its own role in dealing
+                                                    50
+          82                                                                                   with irregular and missing time series data. Among them,
+          78                                        45                                         the CGFR module has made the most outstanding contri-
+          74                                        40                                         bution. There is signiﬁcant complementarity between SCSE
+               10% 20% 30% 40% 50%                       10% 20% 30% 40% 50%                   and AG-DRR, further verifying the rationality and effective-
+                    Missing_ratio                             Missing_ratio
+                                                                                               ness of the SPECTRA architecture design.
+                  (a) AUC                                   (b) AUPR
+                                                                                                                      P12                          P19
+Figure 4: CGFR missing robustness analysis on P19 dataset.                                         Methods
+                                                                                                               AUC          AUPR            AUC          AUPR
+                                                                                                    Focal    85.5 ±1.2    52.0 ±3.3      89.0 ±1.9    56.9 ±5.2
+                                                                                                   LDAM      85.5 ±1.1    52.1 ±3.5      89.1 ±2.2    57.7 ±5.3
+CGFR Missing Robustness Experiment                                                                   PF      85.6 ±1.2    52.2 ±3.3      88.9 ±1.1    55.0 ±2.7
+We evaluate CGFR effectiveness through two experiments.                                             BSL      85.6 ±1.2    51.9 ±3.3      89.2 ±2.0    56.9 ±3.8
+Figure 4 shows SPECTRA outperforms w/o CGFR vari-                                                   WCE      85.6 ±1.2    52.0 ±3.3      89.1 ±1.8    57.1 ±5.2
+ants across all missing rates (10-50%), with AUROC im-                                               CB      85.6 ±1.1    52.1 ±3.4      89.4 ±2.1    58.3 ±4.8
+provements up to 4.29% and AUPRC up to 18.64%. Table                                                Ours     86.3 ±0.9    54.4 ±3.5      90.0 ±2.0    59.4 ±5.4
+3 demonstrates CGFR outperforms standard loss functions
+(Focal (Lin et al. 2017), LDAM (Cao et al. 2019), BSL (Ren                                     Table 3: Comparative performance with state-of-the-art im-
+et al. 2020) CB (Cui et al. 2019),) on imbalanced datasets                                     balanced learning methods.
+P12/P19, particularly in AUPRC metrics. These results val-
+idate CGFR’s effectiveness in addressing coupled missing-
+imbalance challenges through improved intra-class aggrega-                                                               Conclusion
+tion and inter-class separability.                                                             This work establishes the ﬁrst uniﬁed theoretical and al-
+                                                                                               gorithmic framework for addressing the coupled miss-
+Ablation Study                                                                                 ing–imbalance problem in irregular time series. We demon-
+To verify the contribution of each module to the overall per-                                  strate from an information-theoretic perspective that these
+formance, we conducted an ablation experiment, and the re-                                     two phenomena are intrinsically related, and fundamen-
+sults are shown in the Table 2. Overall, the complete model                                    tally reshape the approach to addressing such challenges in
+achieved the best performance in all indicators, indicating                                    the ﬁeld. The SPECTRA framework achieves information-
+that there is a good synergy among the various modules.                                        theoretic optimality through a rigorously designed architec-
+Among them, the CGFR module has the most signiﬁcant                                            ture, and comprehensive experiments across diverse datasets
+improvement in model performance. The class center con-                                        validate the theoretical predictions, showing signiﬁcant im-
+straint mechanism it introduces not only enhances the dis-                                     provements over 14 mainstream baselines. The proposed
+criminability of features but also signiﬁcantly alleviates the                                 framework can be extended beyond time series to domains
+learning bias caused by class imbalance. The MPE provides                                      such as computer vision, NLP, and graph learning, while
+explicit information in modeling the changes of missing                                        also opening future research directions including neural
+structures, and makes a signiﬁcant contribution to perfor-                                     ODE integration, causal inference under MNAR scenarios,
+mance improvement, especially in scenarios with high miss-                                     and federated learning with coupling constraints.
+
+
+                                                                                       24951
+                  Acknowledgments                                        Horn, M.; Moor, M.; Bock, C.; Rieck, B.; and Borgwardt,
+The authors would like to thank Miss Wei Xia for her                     K. M. 2020. Set functions for time series. In International
+valuable discussions and insightful ideas. This work was                 Conference on Machine Learning, 4353–4363. PMLR.
+supported in part by the National Natural Science Foun-                  Islam, A.; Belhaouari, S. B.; Rehman, A. U.; and Bensmail,
+dation of China under Grants 62306212 and T2422015,                      H. 2022. KNNOR: An oversampling technique for imbal-
+in part by Beijing-Tianjin-Hebei Natural Science Founda-                 anced datasets. Applied soft computing, 115: 108288.
+tion Cooperation Project under Grant 25JJJJC0009, and in                 Johnson, J. M.; and Khoshgoftaar, T. M. 2022. Cost-
+part by the Open Fund of the Key Laboratory of Ocean                     sensitive ensemble learning for highly imbalanced classi-
+Observation Technology under Grant 2024klootA04. The                     ﬁcation. In 2022 21st IEEE International Conference on
+work of Xu Cheng was additionally supported by the                       Machine Learning and Applications (ICMLA), 1427–1434.
+Marie Skłodowska-Curie Actions (MSCA) under Project                      IEEE.
+101111188.                                                               Kim, S.; Kim, H.; Yun, E.; Lee, H.; Lee, J.; and Lee, J.
+                                                                         2023. Probabilistic imputation for time-series classiﬁcation
+                       References                                        with missing data. In International Conference on Machine
+Biloš, M.; Rasul, K.; Schneider, A.; Nevmyvaka, Y.; and                 Learning, 16654–16667. PMLR.
+Günnemann, S. 2023. Modeling temporal data as continuous                Li, Z.; Li, S.; and Yan, X. 2024. Time series as images:
+functions with stochastic process diffusion. In International            Vision transformer for irregularly sampled time series. Ad-
+Conference on Machine Learning, 2452–2470. PMLR.                         vances in Neural Information Processing Systems, 36.
+Cao, K.; Wei, C.; Gaidon, A.; Arechiga, N.; and Ma, T. 2019.             Lin, T.-Y.; Goyal, P.; Girshick, R.; He, K.; and Dollár, P.
+Learning imbalanced datasets with label-distribution-aware               2017. Focal loss for dense object detection. In Proceedings
+margin loss. Advances in neural information processing sys-              of the IEEE international conference on computer vision,
+tems, 32.                                                                2980–2988.
+Cao, W.; Wang, D.; Li, J.; Zhou, H.; Li, L.; and Li, Y. 2018.            Liu, J.; Cao, M.; and Chen, S. 2024. MuSiCNet: A
+Brits: Bidirectional recurrent imputation for time series. Ad-           Gradual Coarse-to-Fine Framework for Irregularly Sam-
+vances in neural information processing systems, 31.                     pled Multivariate Time Series Analysis. arXiv preprint
+                                                                         arXiv:2412.01063.
+Chawla, N. V.; Bowyer, K. W.; Hall, L. O.; and Kegelmeyer,
+W. P. 2002. SMOTE: synthetic minority over-sampling tech-                Liu, W.; Zhang, H.; Ding, Z.; Liu, Q.; and Zhu, C. 2021a.
+nique. Journal of artiﬁcial intelligence research, 16: 321–              A comprehensive active learning method for multiclass im-
+357.                                                                     balanced data streams with concept drift. Knowledge-Based
+                                                                         Systems, 215: 106778.
+Che, Z.; Purushotham, S.; Cho, K.; Sontag, D.; and Liu, Y.
+                                                                         Liu, Y.; Liu, Y.; Bruce, X.; Zhong, S.; and Hu, Z. 2023.
+2018. Recurrent neural networks for multivariate time series
+                                                                         Noise-robust oversampling for imbalanced data classiﬁca-
+with missing values. Scientiﬁc reports, 8(1): 6085.
+                                                                         tion. Pattern Recognition, 133: 109008.
+Chen, Y.; Ren, K.; Wang, Y.; Fang, Y.; Sun, W.; and Li, D.               Liu, Z.; Wei, P.; Wei, Z.; Yu, B.; Jiang, J.; Cao, W.; Bian,
+2024. Contiformer: Continuous-time transformer for irreg-                J.; and Chang, Y. 2021b. Handling inter-class and intra-
+ular time series modeling. Advances in Neural Information                class imbalance in class-imbalanced learning. arXiv preprint
+Processing Systems, 36.                                                  arXiv:2111.12791.
+Cheng, X.; Shi, F.; Zhang, Y.; Li, H.; Liu, X.; and Chen, S.             Luo, Y.; Cai, X.; Zhang, Y.; Xu, J.; et al. 2018. Multivariate
+2024. FRAME: Feature Rectiﬁcation for Class Imbalance                    time series imputation with generative adversarial networks.
+Learning. IEEE Transactions on Knowledge and Data En-                    Advances in neural information processing systems, 31.
+gineering.
+                                                                         Luo, Y.; Zhang, Y.; Cai, X.; and Yuan, X. 2019. E²GAN:
+Citi, L.; and Barbieri, R. 2012. PhysioNet 2012 Challenge:               End-to-End Generative Adversarial Network for Multivari-
+Predicting mortality of ICU patients using a cascaded SVM-               ate Time Series Imputation. In Proceedings of the Twenty-
+GLM paradigm. In 2012 Computing in Cardiology, 257–                      Eighth International Joint Conference on Artiﬁcial Intel-
+260. IEEE.                                                               ligence, IJCAI-19, 3094–3100. International Joint Confer-
+Cui, Y.; Jia, M.; Lin, T.-Y.; Song, Y.; and Belongie, S. 2019.           ences on Artiﬁcial Intelligence Organization.
+Class-balanced loss based on effective number of samples.                Maldonado, S.; Vairetti, C.; Fernandez, A.; and Herrera, F.
+In Proceedings of the IEEE/CVF conference on computer                    2022. FW-SMOTE: A feature-weighted oversampling ap-
+vision and pattern recognition, 9268–9277.                               proach for imbalanced classiﬁcation. Pattern Recognition,
+Ding, H.; Sun, Y.; Wang, Z.; Huang, N.; Shen, Z.; and Cui,               124: 108511.
+X. 2023. RGAN-EL: A GAN and ensemble learning-based                      Mulyadi, A. W.; Jun, E.; and Suk, H.-I. 2021. Uncertainty-
+hybrid approach for imbalanced data classiﬁcation. Infor-                aware variational-recurrent imputation network for clini-
+mation Processing & Management, 60(2): 103235.                           cal time series. IEEE Transactions on Cybernetics, 52(9):
+Du, W.; Côté, D.; and Liu, Y. 2023. Saits: Self-attention-             9684–9694.
+based imputation for time series. Expert Systems with Ap-                Qian, M.; and Li, Y.-F. 2022. A weakly supervised learning-
+plications, 219: 119619.                                                 based oversampling framework for class-imbalanced fault
+
+
+                                                                 24952
+diagnosis. IEEE Transactions on Reliability, 71(1): 429–                 Yan, Y.; Zhu, Y.; Liu, R.; Zhang, Y.; Zhang, Y.; and Zhang,
+442.                                                                     L. 2022. Spatial distribution-based imbalanced undersam-
+Reiss, A.; and Stricker, D. 2012. Introducing a new bench-               pling. IEEE Transactions on Knowledge and Data Engi-
+marked dataset for activity monitoring. In 2012 16th in-                 neering, 35(6): 6376–6391.
+ternational symposium on wearable computers, 108–109.                    Yoon, J.; Zame, W. R.; and van der Schaar, M. 2018. Es-
+IEEE.                                                                    timating missing data in temporal data streams using multi-
+Ren, J.; Yu, C.; Ma, X.; Zhao, H.; Yi, S.; et al. 2020. Bal-             directional recurrent neural networks. IEEE Transactions on
+anced meta-softmax for long-tailed visual recognition. Ad-               Biomedical Engineering, 66(5): 1477–1490.
+vances in neural information processing systems, 33: 4175–               Zhang, J.; Zheng, S.; Cao, W.; Bian, J.; and Li, J. 2023.
+4186.                                                                    Warpformer: A multi-scale modeling approach for irregu-
+Reyna, M. A.; Josef, C. S.; Jeter, R.; Shashikumar, S. P.;               lar clinical time series. In Proceedings of the 29th ACM
+Westover, M. B.; Nemati, S.; Clifford, G. D.; and Sharma,                SIGKDD Conference on Knowledge Discovery and Data
+A. 2020. Early prediction of sepsis from clinical data: the              Mining, 3273–3285.
+PhysioNet/Computing in Cardiology Challenge 2019. Crit-                  Zhang, X.; Zeman, M.; Tsiligkaridis, T.; and Zitnik, M.
+ical care medicine, 48(2): 210–217.                                      2022. Graph-Guided Network for Irregularly Sampled Mul-
+Shan, S.; Li, Y.; and Oliva, J. B. 2023. Nrtsi: Non-recurrent            tivariate Time Series. In International Conference on Learn-
+time series imputation. In ICASSP 2023-2023 IEEE Inter-                  ing Representations.
+national Conference on Acoustics, Speech and Signal Pro-                 Zheng, L. N.; Li, Z.; Dong, C. G.; Zhang, W. E.; Yue, L.; Xu,
+cessing (ICASSP), 1–5. IEEE.                                             M.; Maennel, O.; and Chen, W. 2024. Irregularity-Informed
+Shukla, S. N.; and Marlin, B. M. 2019. Interpolation-                    Time Series Analysis: Adaptive Modelling of Spatial and
+prediction networks for irregularly sampled time series.                 Temporal Dynamics. In Proceedings of the 33rd ACM Inter-
+arXiv preprint arXiv:1909.07782.                                         national Conference on Information and Knowledge Man-
+                                                                         agement, 3405–3414.
+Shukla, S. N.; and Marlin, B. M. 2021. Multi-time attention
+networks for irregularly sampled time series. arXiv preprint
+arXiv:2101.10318.
+Soltanzadeh, P.; Feizi-Derakhshi, M. R.; and Hashemzadeh,
+M. 2023.       Addressing the class-imbalance and class-
+overlap problems by a metaheuristic-based under-sampling
+approach. Pattern Recognition, 143: 109721.
+Tipirneni, S.; and Reddy, C. K. 2022. Self-supervised trans-
+former for sparse and irregularly sampled multivariate clini-
+cal time-series. ACM Transactions on Knowledge Discovery
+from Data (TKDD), 16(6): 1–17.
+Vaswani, A. 2017. Attention is all you need. Advances in
+Neural Information Processing Systems.
+Wang, X.; Zhang, H.; Wang, P.; Zhang, Y.; Wang, B.; Zhou,
+Z.; and Wang, Y. 2023. An observed value consistent dif-
+fusion model for imputing missing values in multivariate
+time series. In Proceedings of the 29th ACM SIGKDD Con-
+ference on Knowledge Discovery and Data Mining, 2409–
+2418.
+Wu, Y.; Ni, J.; Cheng, W.; Zong, B.; Song, D.; Chen, Z.;
+Liu, Y.; Zhang, X.; Chen, H.; and Davidson, S. B. 2021.
+Dynamic gaussian mixture based deep generative model for
+robust forecasting on sparse multivariate time series. In Pro-
+ceedings of the AAAI Conference on Artiﬁcial Intelligence,
+volume 35, 651–659.
+Wu, Z.; Pan, S.; Long, G.; Jiang, J.; Chang, X.; and Zhang,
+C. 2020. Connecting the dots: Multivariate time series fore-
+casting with graph neural networks. In Proceedings of the
+26th ACM SIGKDD international conference on knowledge
+discovery & data mining, 753–763.
+Xie, Y.; Qiu, M.; Zhang, H.; Peng, L.; and Chen, Z. 2020.
+Gaussian distribution based oversampling for imbalanced
+data classiﬁcation. IEEE Transactions on Knowledge and
+Data Engineering, 34(2): 667–679.
+
+
+                                                                 24953
+

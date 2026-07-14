@@ -61,6 +61,18 @@ CONTROL_MODELS = [
     'smart-smile-lean-random-bias',
     'smart-smile-lean-global-comiss',
 ]
+# Strictly-causal D2 policy-FiLM variants.  The primary hidden condition keeps
+# the unsuffixed model name; controls use an explicit conditioning suffix so
+# their checkpoint directories can never collide.
+POLICY_MODELS = {
+    'smart-smile-lean-policy': 'hidden',
+    'smart-smile-lean-policy-pi': 'pi',
+    'smart-smile-lean-policy-residual': 'residual',
+    'smart-smile-lean-policy-shuffled': 'shuffled',
+    'smart-smile-lean-policy-density': 'density',
+    'smart-smile-lean-policy-time': 'time',
+    'smart-smile-lean-policy-no-policy': 'no-policy',
+}
 # Parameter-matched backbone control: plain SMART backbone widened to strictly
 # exceed the SMILE-Lean parameter count (d_model 40 vs 32), same training budget
 # as the SMART baseline. Isolates capacity from the structured-missingness modules.
@@ -86,6 +98,7 @@ _LEAN_V1_ABLATION_MODELS = set(ABLATION_MODELS) | set(CONTROL_MODELS)
 _LEAN_V2_ABLATION_MODELS = set()
 _LEAN_ABLATION_MODELS = set(ABLATION_MODELS) | set(CONTROL_MODELS)
 _LEAN_MODELS.update(_LEAN_ABLATION_MODELS)
+_LEAN_MODELS.update(POLICY_MODELS)
 # Density-window sweep variants share all SMILE-Lean training settings.
 _LEAN_MODELS.update(DENSITY_WINDOW_SWEEP)
 
@@ -113,6 +126,17 @@ def mask_group_config_path(mask_group_config):
 
 def models_require_mask_group_config(models):
     return [model for model in models if model in _LEAN_MODELS]
+
+
+def policy_model_flags(model_name):
+    """Return the policy architecture flags associated with a runner name."""
+    conditioning = POLICY_MODELS.get(model_name)
+    if conditioning is None:
+        return []
+    return [
+        '--use-smile-lean-policy',
+        '--policy-conditioning', conditioning,
+    ]
 
 
 def pretrain_ckpt(export_root, dataset, model_name, seed):
@@ -212,11 +236,13 @@ def main():
                              'Defaults to SMART_PYTHON_EXECUTABLE env or the current interpreter.')
     parser.add_argument('--models', nargs='+', default=ALL_MODELS,
                         choices=ALL_MODELS + ABLATION_MODELS + CONTROL_MODELS
-                                + list(PMATCH_MODELS) + list(DENSITY_WINDOW_SWEEP),
+                                + list(POLICY_MODELS) + list(PMATCH_MODELS)
+                                + list(DENSITY_WINDOW_SWEEP),
                         metavar='MODEL',
                         help='Models to run. Available: ' + ', '.join(
                             ALL_MODELS + ABLATION_MODELS + CONTROL_MODELS
-                            + list(PMATCH_MODELS) + list(DENSITY_WINDOW_SWEEP)))
+                            + list(POLICY_MODELS) + list(PMATCH_MODELS)
+                            + list(DENSITY_WINDOW_SWEEP)))
     parser.add_argument('--datasets', nargs='+', default=ALL_DATASETS,
                         choices=ALL_DATASETS, metavar='DATASET')
     parser.add_argument('--seeds', nargs='+', type=int, default=ALL_SEEDS,
@@ -249,10 +275,18 @@ def main():
                         help='Only evaluate existing checkpoint-prc.pth files')
     parser.add_argument('--force', action='store_true',
                         help='Re-run even if checkpoint already exists')
+    parser.add_argument('--policy-loss-weight', type=float, default=0.1,
+                        help='Causal policy BCE weight forwarded to policy pretraining.')
+    parser.add_argument('--finetune-policy', action='store_true',
+                        help='Jointly finetune policy encoders instead of freezing them.')
+    parser.add_argument('--skip-test', action='store_true',
+                        help='Skip held-out test evaluation after finetuning.')
     args = parser.parse_args()
     exclusive_modes = [args.pretrain_only, args.finetune_only, args.eval_only]
     if sum(exclusive_modes) > 1:
         parser.error('--pretrain-only, --finetune-only, and --eval-only are mutually exclusive')
+    if args.eval_only and args.skip_test:
+        parser.error('--eval-only and --skip-test are mutually exclusive')
     structured_models = models_require_mask_group_config(args.models)
     if structured_models and not (args.finetune_only or args.eval_only):
         if not args.mask_group_config:
@@ -303,6 +337,15 @@ def main():
         _is_lean_v1_ablation = model in _LEAN_V1_ABLATION_MODELS
         _is_density_window_sweep = model in DENSITY_WINDOW_SWEEP
         use_smile_lean_flag              = ['--use-smile-lean']             if model in ('smart-smile-lean', 'smart-smile-lean-pmae') or _is_lean_v1_ablation or _is_density_window_sweep else []
+        policy_flags = policy_model_flags(model)
+        policy_pretrain_flags = (
+            policy_flags + ['--policy-loss-weight', str(args.policy_loss_weight)]
+            if policy_flags else []
+        )
+        policy_finetune_flags = (
+            policy_flags + (['--finetune-policy'] if args.finetune_policy else [])
+            if policy_flags else []
+        )
         # Non-default density-window forwarded to pretrain, finetune, and eval so
         # the encoder is rebuilt with a matching receptive field at every stage.
         density_window_flag = (['--obs-density-window', str(DENSITY_WINDOW_SWEEP[model])]
@@ -324,6 +367,7 @@ def main():
                          'smart-smile-lean', 'smart-smile-lean-samepretrain', 'smart-smile-lean-pmae'}
         _lean_exclude.update(_ABLATION_FLAGS.keys())
         _lean_exclude.update(DENSITY_WINDOW_SWEEP)
+        _lean_exclude.update(POLICY_MODELS)
         use_smile_flag         = ['--use-smile']         if (model.startswith('smart-smile')
                                                              and model not in _lean_exclude) else []
         use_mnar_flag          = ['--use-mnar']          if model == 'smart-mnar'          else []
@@ -341,6 +385,7 @@ def main():
             smile_extra = ['--smile-stratified']
         # Architecture ablation flags
         arch_abl_extra = _ABLATION_FLAGS.get(model, [])
+        skip_test_flag = ['--skip-test'] if args.skip_test else []
         tag_prefix = f'[{idx:>2}/{total}] {model:12s} | {dataset:25s} | seed={seed}'
         los_ft_flags = los_finetune_flags(dataset)
 
@@ -362,7 +407,7 @@ def main():
                 '--save_dir', args.export_root,
                 '--split-seed', str(args.split_seed),
                 '--eval-only',
-            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + arch_abl_extra + density_window_flag + pmatch_flag
+            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + policy_flags + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + arch_abl_extra + density_window_flag + pmatch_flag
             ok = run_cmd(cmd, f'{tag_prefix} | EVALUATE', args.dry_run, env=launch_env)
             if not ok:
                 failed.append(f'{tag_prefix} evaluation')
@@ -390,7 +435,7 @@ def main():
                     '--batch_size', str(cur_batch_size),
                     '--save_dir', args.export_root,
                     '--split-seed', str(args.split_seed),
-                ] + save_last_flag + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pmae_pretrain_flag + arch_abl_extra + density_window_flag + pmatch_flag
+                ] + save_last_flag + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + policy_pretrain_flags + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pmae_pretrain_flag + arch_abl_extra + density_window_flag + pmatch_flag
                 if args.mask_group_config:
                     cmd.extend(['--mask-group-config', args.mask_group_config])
                 ok = run_cmd(cmd, f'{tag_prefix} | PRETRAIN', args.dry_run, env=launch_env)
@@ -419,7 +464,7 @@ def main():
                 '--batch_size', str(cur_batch_size),
                 '--save_dir', args.export_root,
                 '--split-seed', str(args.split_seed),
-            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pretrain_dir_flag + arch_abl_extra + density_window_flag + pmatch_flag
+            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + policy_finetune_flags + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pretrain_dir_flag + arch_abl_extra + density_window_flag + pmatch_flag + skip_test_flag
             ok = run_cmd(cmd, f'{tag_prefix} | FINETUNE', args.dry_run, env=launch_env)
             if not ok:
                 failed.append(f'{tag_prefix} finetune')

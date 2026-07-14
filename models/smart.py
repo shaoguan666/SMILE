@@ -1858,6 +1858,371 @@ class SMILELeanEncoder(nn.Module):
 
 
 # ============================================================
+# SMILE-Lean Policy: strictly-causal D2 policy representation
+# ============================================================
+
+
+def causal_policy_bce(logits, target_mask, lens):
+    """Binary mask-prediction loss over valid (unpadded) positions only.
+
+    Args:
+        logits:      (B, T, V) causal policy logits.
+        target_mask: (B, T, V) clean natural observation mask.
+        lens:        (B,) valid sequence lengths.
+    """
+    B, T, V = logits.shape
+    if target_mask.shape != logits.shape:
+        raise ValueError(
+            f'policy target shape {tuple(target_mask.shape)} does not match '
+            f'logits shape {tuple(logits.shape)}'
+        )
+    valid = length_to_mask(lens, max_len=T, device=logits.device)
+    valid = valid.unsqueeze(-1).expand(B, T, V)
+    if not valid.any():
+        return logits.sum() * 0.0
+    return F.binary_cross_entropy_with_logits(
+        logits[valid], target_mask.float()[valid]
+    )
+
+
+class CausalD2PolicyEncoder(nn.Module):
+    """Strictly-causal cross-variable observation-policy encoder.
+
+    At position ``t`` the temporal convolution receives only the clean natural
+    mask history ``m_{<t,:}``.  The mask is shifted right before conversion to
+    Conv1d layout, the convolution uses left-only padding, and its output is
+    transposed from (B, H, T) to (B, T, H) before variable broadcasting.
+
+    This is the production counterpart of the Audit D2 representation.  It is
+    deliberately implemented here instead of importing diagnostic audit code.
+    Clinical values are never accepted by this module.
+    """
+
+    def __init__(self, num_vars, hidden_dim=64, time_dim=16, kernel_size=7):
+        super().__init__()
+        if kernel_size < 1:
+            raise ValueError('policy_kernel_size must be at least 1')
+        self.num_vars = num_vars
+        self.hidden_dim = hidden_dim
+        self.kernel_size = kernel_size
+        self.time_encoder = TimeEncoder(time_dim)
+        self.var_emb = nn.Embedding(num_vars, hidden_dim)
+        self.causal_conv = nn.Conv1d(
+            num_vars, hidden_dim, kernel_size, padding=0
+        )
+        self.time_proj = nn.Linear(time_dim, hidden_dim)
+        self.density_proj = nn.Linear(1, hidden_dim)
+        self.head = nn.Sequential(
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+        nn.init.normal_(self.var_emb.weight, std=0.02)
+
+    @staticmethod
+    def shift_right(mask):
+        """Return ``[0, m_0, ..., m_{T-2}]`` without current-mask leakage."""
+        return F.pad(mask, (0, 0, 1, 0))[:, :-1, :]
+
+    @staticmethod
+    def running_density(shifted_mask):
+        """Per-variable density over the strictly preceding mask history."""
+        T = shifted_mask.shape[1]
+        denom = torch.arange(
+            T, device=shifted_mask.device, dtype=shifted_mask.dtype
+        ).clamp(min=1).view(1, T, 1)
+        return torch.cumsum(shifted_mask, dim=1) / denom
+
+    def _shuffled_conv(self, seq):
+        """D2-shuffled convolution with true own history per target variable.
+
+        Non-target channels are independently patient-shuffled.  Training uses
+        random permutations; evaluation uses deterministic cyclic permutations
+        so validation and checkpoint round-trip tests remain reproducible.
+        """
+        B, V, T = seq.shape
+        if B <= 1:
+            shared = self.causal_conv(
+                F.pad(seq, (self.kernel_size - 1, 0))
+            )
+            return shared.unsqueeze(1).expand(-1, V, -1, -1)
+
+        shuffled = torch.empty_like(seq)
+        for v in range(V):
+            if self.training:
+                perm = torch.randperm(B, device=seq.device)
+                shuffled[:, v, :] = seq[perm, v, :]
+            else:
+                shift = (v % (B - 1)) + 1
+                shuffled[:, v, :] = torch.roll(seq[:, v, :], shift, dims=0)
+
+        left = self.kernel_size - 1
+        conv_shuffled = self.causal_conv(F.pad(shuffled, (left, 0)))
+        delta_padded = F.pad(seq - shuffled, (left, 0))
+        weight = self.causal_conv.weight
+        corrections = []
+        for target_v in range(V):
+            corrections.append(F.conv1d(
+                delta_padded[:, target_v:target_v + 1, :],
+                weight[:, target_v:target_v + 1, :],
+            ))
+        corrections = torch.stack(corrections, dim=1)  # (B, V, H, T)
+        return conv_shuffled.unsqueeze(1) + corrections
+
+    def forward(self, original_mask, time=None, lens=None, shuffled=False):
+        if original_mask.ndim != 3:
+            raise ValueError('original_mask must have shape (B, T, V)')
+        B, T, V = original_mask.shape
+        if V != self.num_vars:
+            raise ValueError(
+                f'policy encoder expected V={self.num_vars}, received V={V}'
+            )
+        if lens is None:
+            lens = torch.full(
+                (B,), T, device=original_mask.device, dtype=torch.long
+            )
+        valid = length_to_mask(
+            lens, max_len=T, device=original_mask.device
+        )
+        valid_btv = valid.unsqueeze(-1)
+
+        # Remove arbitrary padded values before shifting.  No value at t or
+        # later can reach the representation at t through this left-causal path.
+        clean_mask = original_mask.float() * valid_btv
+        shifted = self.shift_right(clean_mask)                  # (B, T, V)
+        seq = shifted.permute(0, 2, 1)                          # (B, V, T)
+
+        if shuffled:
+            conv = self._shuffled_conv(seq)                     # (B, V, H, T)
+            hidden = conv.permute(0, 3, 1, 2)                  # (B, T, V, H)
+        else:
+            conv = self.causal_conv(
+                F.pad(seq, (self.kernel_size - 1, 0))
+            )                                                   # (B, H, T)
+            hidden_seq = conv.transpose(1, 2)                  # (B, T, H)
+            hidden = hidden_seq.unsqueeze(2).expand(-1, -1, V, -1)
+
+        density = self.running_density(shifted)                 # (B, T, V)
+        if time is None:
+            time_condition = torch.zeros(
+                B, T, self.hidden_dim,
+                device=original_mask.device,
+                dtype=hidden.dtype,
+            )
+        else:
+            if time.shape != (B, T):
+                raise ValueError(
+                    f'time must have shape {(B, T)}, received {tuple(time.shape)}'
+                )
+            time_condition = self.time_proj(
+                self.time_encoder(time.float())
+            )                                                   # (B, T, H)
+
+        hidden = hidden + self.var_emb.weight.view(1, 1, V, -1)
+        hidden = hidden + time_condition.unsqueeze(2)
+        hidden = hidden + self.density_proj(density.unsqueeze(-1))
+        hidden = hidden * valid_btv.unsqueeze(-1)
+        time_condition = time_condition * valid.unsqueeze(-1)
+        density = density * valid_btv
+
+        logits = self.head(hidden).squeeze(-1)                  # (B, T, V)
+        logits = logits * valid_btv
+        prob = torch.sigmoid(logits) * valid_btv
+        return {
+            'hidden': hidden,
+            'logits': logits,
+            'prob': prob,
+            'density': density,
+            'time_condition': time_condition,
+            'valid_mask': valid,
+        }
+
+
+class PolicyFiLM(nn.Module):
+    """Per-variable/per-time FiLM with an identity zero initialization."""
+
+    def __init__(self, condition_dim, model_dim):
+        super().__init__()
+        self.generator = nn.Sequential(
+            nn.Linear(condition_dim, condition_dim),
+            nn.GELU(),
+            nn.Linear(condition_dim, 2 * model_dim),
+        )
+        nn.init.zeros_(self.generator[-1].weight)
+        nn.init.zeros_(self.generator[-1].bias)
+
+    def forward(self, x, condition):
+        # x: (B, V, T, d), condition: (B, T, V, H)
+        film = self.generator(condition).permute(0, 2, 1, 3)
+        gamma, beta = film.chunk(2, dim=-1)
+        return (1.0 + gamma) * x + beta
+
+
+class SMILELeanPolicyEncoder(SMILELeanEncoder):
+    """SMILE-Lean plus a strictly-causal D2 policy FiLM pathway.
+
+    The original Lean density, static co-missingness bias, time FiLM, and
+    physical-time positional encoding are intentionally retained.  Only the
+    new policy hidden/probability path is claimed to be strictly causal.
+    """
+
+    VALID_CONDITIONING = {
+        'hidden', 'pi', 'residual', 'shuffled',
+        'density', 'time', 'no-policy',
+    }
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.policy_conditioning = getattr(
+            args, 'policy_conditioning', 'hidden'
+        )
+        if self.policy_conditioning not in self.VALID_CONDITIONING:
+            raise ValueError(
+                f'unknown policy conditioning: {self.policy_conditioning}'
+            )
+        self.policy_hidden_dim = getattr(args, 'policy_hidden_dim', 64)
+        self.policy_encoder = CausalD2PolicyEncoder(
+            num_vars=args.input_dim,
+            hidden_dim=self.policy_hidden_dim,
+            time_dim=self.time_dim,
+            kernel_size=getattr(args, 'policy_kernel_size', 7),
+        )
+        self.policy_film = PolicyFiLM(
+            condition_dim=self.policy_hidden_dim,
+            model_dim=args.d_model,
+        )
+        # Detach the FiLM condition so reconstruction/classification gradients do
+        # NOT flow into the policy encoder: it is then shaped purely by the causal
+        # mask BCE, keeping pi calibrated and the injected representation faithful
+        # to the audited D2 encoder. The only case where the task should train the
+        # policy encoder is an explicit joint finetune (--finetune-policy), which
+        # relies on the FiLM path for gradient (finetune adds no policy BCE).
+        self.policy_detach = not getattr(args, 'finetune_policy', False)
+
+    def _policy_condition(self, output, original_mask, density):
+        mode = self.policy_conditioning
+        if mode in ('hidden', 'shuffled'):
+            return output['hidden']
+        if mode == 'pi':
+            scalar = output['prob']
+        elif mode == 'residual':
+            scalar = (original_mask.float() - output['prob']).clamp(-1.0, 1.0)
+            scalar = scalar * output['valid_mask'].unsqueeze(-1)
+        elif mode == 'density':
+            scalar = density.float() * output['valid_mask'].unsqueeze(-1)
+        elif mode == 'time':
+            return output['time_condition'].unsqueeze(2).expand(
+                -1, -1, original_mask.shape[-1], -1
+            )
+        else:
+            return None
+        return scalar.unsqueeze(-1).expand(
+            -1, -1, -1, self.policy_hidden_dim
+        )
+
+    def forward(self, x, lens, mask, time=None, original_mask=None,
+                return_policy=False, **kwargs):
+        # Compute the exact same local density feature as SMILELeanEncoder.
+        if original_mask is not None:
+            B_m, T_m, V_m = original_mask.shape
+            ws = self.obs_density_window
+            m = original_mask.float().permute(0, 2, 1).reshape(B_m * V_m, 1, T_m)
+            d = F.avg_pool1d(m, kernel_size=ws, stride=1, padding=ws // 2)
+            density = d.reshape(B_m, V_m, T_m).permute(0, 2, 1)
+        else:
+            density = torch.zeros_like(mask)
+
+        if self.abl_no_density:
+            x = self.embedder(x, mask)                          # (B, V, T, d)
+        else:
+            x = self.embedder(x, mask, density)                 # (B, V, T, d)
+
+        policy_output = None
+        if original_mask is not None:
+            policy_output = self.policy_encoder(
+                original_mask=original_mask,
+                time=time,
+                lens=lens,
+                shuffled=self.policy_conditioning == 'shuffled',
+            )
+            condition = self._policy_condition(
+                policy_output, original_mask, density
+            )
+            if condition is not None:
+                # Gradient isolation: the policy encoder learns only from the
+                # causal mask BCE (via policy_output['logits']), not from the main
+                # objective. The returned policy_output keeps the graph for BCE.
+                if self.policy_detach:
+                    condition = condition.detach()
+                x = self.policy_film(x, condition)
+
+        # The remainder mirrors SMILELeanEncoder.forward so the inherited
+        # baseline implementation and checkpoint behavior remain untouched.
+        mnar_cooccur = None
+        if not self.abl_no_mnar_bias and original_mask is not None:
+            mnar_cooccur = self.mnar_cooccur_encoder(original_mask)
+            if self.abl_random_bias:
+                if self.training:
+                    perm = torch.randperm(
+                        mnar_cooccur.shape[1], device=mnar_cooccur.device
+                    )
+                else:
+                    perm = self.rand_bias_perm.to(mnar_cooccur.device)
+                mnar_cooccur = mnar_cooccur[:, perm][:, :, perm]
+            elif self.abl_global_comiss:
+                if self.training:
+                    batch_mean = mnar_cooccur.mean(dim=0).detach()
+                    if dist.is_available() and dist.is_initialized():
+                        dist.all_reduce(batch_mean, op=dist.ReduceOp.SUM)
+                        batch_mean.div_(dist.get_world_size())
+                    if self.global_comiss_ready.item() < 1:
+                        self.global_comiss.copy_(batch_mean)
+                        self.global_comiss_ready.fill_(1.0)
+                    else:
+                        momentum = self.global_comiss_momentum
+                        self.global_comiss.mul_(momentum).add_(
+                            batch_mean, alpha=1 - momentum
+                        )
+                mnar_cooccur = self.global_comiss.unsqueeze(0).expand(
+                    mnar_cooccur.shape[0], -1, -1
+                ).contiguous()
+
+        x = torch.cat(
+            (self.query.repeat(x.shape[0], 1, 1, 1), x), dim=2
+        )
+        x = self.position_enc(x)
+
+        lens_mask = length_to_mask(lens + 1)
+        mask_full = torch.cat(
+            (torch.ones(mask.shape[0], 1, mask.shape[-1],
+                        device=mask.device, dtype=mask.dtype), mask),
+            dim=1,
+        ).transpose(1, 2).float()
+
+        time_enc = None
+        if time is not None:
+            cls_time = torch.zeros(
+                x.shape[0], 1, device=time.device, dtype=time.dtype
+            )
+            time_full = torch.cat([cls_time, time], dim=1)
+            time_enc = self.time_encoder(time_full)
+            if not self.abl_no_time_pe:
+                time_pe = self.time_pe_proj(time_enc).unsqueeze(1)
+                x = x + time_pe
+
+        for block in self.blocks:
+            x = block(
+                x, mask_full, lens, lens_mask,
+                mnar_cooccur, time_enc,
+            )
+
+        if return_policy:
+            return x, policy_output
+        return x
+
+
+# ============================================================
 # SMILE-Lean V2: Dynamic MNAR + Variable Policy + Dual-Head
 # ============================================================
 

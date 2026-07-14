@@ -15,7 +15,7 @@ from data.challenge2019 import load_challenge_2019
 from data.mimiciii import load_mimic_iii_mortality, load_mimic_iii_phenotyping, load_mimic_iii_decompensation, load_mimic_iii_lengthofstay
 from data.dataloader import collate_fn
 from data.feature_registry import REGISTRY_VERSION, registry_fingerprint
-from models.smart import EmbeddingDecoder
+from models.smart import EmbeddingDecoder, causal_policy_bce
 from utils.utils import (
     set_seed,
     distributed_init,
@@ -342,6 +342,8 @@ def test(args, checkpoint_path, test_dataloader):
     predictor.eval()
     target_encoder.eval()
     test_loss = 0
+    test_recon_loss = 0
+    test_policy_loss = 0
     with torch.no_grad():
         for batch in test_dataloader:
             for key in batch:
@@ -351,17 +353,41 @@ def test(args, checkpoint_path, test_dataloader):
             policy_mask_clean = None
             if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                     or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                    or args.use_smile_lean_v2):
+                    or args.use_smile_lean_v2 or args.use_smile_lean_policy):
                 policy_mask_clean = batch['mask'].clone()
             original_mask = None if (args.smile_no_mnar or args.use_smile_lean_samepretrain) else policy_mask_clean
             with torch.no_grad():
                 h = target_encoder(**batch, original_mask=original_mask)
             batch['labels'] = batch['x']
             batch['x'], batch['mask'], pretrain_mask = random_masking(batch['x'], batch['mask'], args.min_mask_ratio, args.max_mask_ratio)
-            z = encoder(**batch, original_mask=original_mask)
+            if args.use_smile_lean_policy:
+                z, policy_output = encoder(
+                    **batch, original_mask=original_mask, return_policy=True
+                )
+            else:
+                z = encoder(**batch, original_mask=original_mask)
+                policy_output = None
             z = predictor(z)
-            test_loss += criterion(z[:, :, 1:], h[:, :, 1:], pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:])).item() * batch['x'].shape[0]
-    log(logger, 'Test Loss %.4f' % (test_loss / len(test_dataset)))
+            recon_loss = criterion(
+                z[:, :, 1:], h[:, :, 1:],
+                pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:])
+            )
+            if policy_output is not None:
+                policy_loss = causal_policy_bce(
+                    policy_output['logits'], policy_mask_clean, batch['lens']
+                )
+            else:
+                policy_loss = recon_loss.new_zeros(())
+            loss = recon_loss + args.policy_loss_weight * policy_loss
+            batch_size = batch['x'].shape[0]
+            test_loss += loss.item() * batch_size
+            test_recon_loss += recon_loss.item() * batch_size
+            test_policy_loss += policy_loss.item() * batch_size
+    log(logger, 'Test Loss %.4f (recon %.4f, policy %.4f)' % (
+        test_loss / len(test_dataset),
+        test_recon_loss / len(test_dataset),
+        test_policy_loss / len(test_dataset),
+    ))
 
 
 def smooth_l1_loss(pred, target, pad_mask, beta=1.0):
@@ -420,6 +446,18 @@ if __name__ == "__main__":
                         help='Use SMILELeanEncoder with same pretrain as smart (random masking, no MNAR)')
     parser.add_argument('--use-smile-lean-v2', action='store_true', default=False,
                         help='Use SMILELeanV2Encoder (dynamic MNAR bias + policy embeddings)')
+    parser.add_argument('--use-smile-lean-policy', action='store_true', default=False,
+                        help='Use SMILELeanPolicyEncoder (strictly-causal D2 policy FiLM)')
+    parser.add_argument('--policy-conditioning', type=str, default='hidden',
+                        choices=['hidden', 'pi', 'residual', 'shuffled',
+                                 'density', 'time', 'no-policy'],
+                        help='Condition supplied to the additional policy FiLM pathway')
+    parser.add_argument('--policy-hidden-dim', type=int, default=64,
+                        help='Hidden width of the causal D2 policy encoder')
+    parser.add_argument('--policy-kernel-size', type=int, default=7,
+                        help='Left-causal temporal convolution kernel size')
+    parser.add_argument('--policy-loss-weight', type=float, default=0.1,
+                        help='Weight of causal natural-mask prediction BCE')
     parser.add_argument('--use-mnar', action='store_true', default=False,
                         help='Use simplified MNAREncoder (no curriculum masking)')
     parser.add_argument('--save-last', action='store_true', default=False,
@@ -498,6 +536,13 @@ if __name__ == "__main__":
     if args.use_smile_lean_samepretrain:
         from models.smart import SMILELeanEncoder as Encoder
         model_name = 'smart-smile-lean-samepretrain'
+    elif args.use_smile_lean_policy:
+        from models.smart import SMILELeanPolicyEncoder as Encoder
+        model_name = 'smart-smile-lean-policy'
+        if args.policy_conditioning != 'hidden':
+            model_name += '-' + args.policy_conditioning
+        if _abl_suffix:
+            model_name += '-' + _abl_suffix
     elif args.use_smile_lean_v2:
         from models.smart import SMILELeanV2Encoder as Encoder
         model_name = 'smart-smile-lean-v2'
@@ -554,7 +599,8 @@ if __name__ == "__main__":
         and not args.smile_no_curriculum
         and not args.smile_stratified
         and (args.use_smile or args.use_smile_film or args.use_smile_lean
-             or args.use_smile_v2 or args.use_smile_v2_film or args.use_smile_lean_v2)
+             or args.use_smile_v2 or args.use_smile_v2_film or args.use_smile_lean_v2
+             or args.use_smile_lean_policy)
     )
     if _uses_curriculum and not args.save_last:
         args.save_last = True
@@ -729,7 +775,11 @@ if __name__ == "__main__":
     epoch_bar = tqdm(range(1, args.epochs + 1), desc='[Pretrain]', unit='epoch')
     for i in epoch_bar:
         train_loss = 0
+        train_recon_loss = 0
+        train_policy_loss = 0
         val_loss = 0
+        val_recon_loss = 0
+        val_policy_loss = 0
         encoder.train()
         predictor.train()
         target_encoder.eval()  # EMA target: eval mode prevents dropout noise in targets
@@ -780,9 +830,27 @@ if __name__ == "__main__":
             else:
                 batch['x'], batch['mask'], pretrain_mask = masking_fn(
                     batch['x'], batch['mask'], args.min_mask_ratio, args.max_mask_ratio)
-            z = encoder(**batch, original_mask=enc_original_mask)
+            if args.use_smile_lean_policy:
+                z, policy_output = encoder(
+                    **batch,
+                    original_mask=enc_original_mask,
+                    return_policy=True,
+                )
+            else:
+                z = encoder(**batch, original_mask=enc_original_mask)
+                policy_output = None
             z = predictor(z)
-            loss = criterion(z[:, :, 1:], h[:, :, 1:], pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:]))
+            recon_loss = criterion(
+                z[:, :, 1:], h[:, :, 1:],
+                pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:]),
+            )
+            if policy_output is not None:
+                policy_loss = causal_policy_bce(
+                    policy_output['logits'], policy_mask_clean, batch['lens']
+                )
+            else:
+                policy_loss = recon_loss.new_zeros(())
+            loss = recon_loss + args.policy_loss_weight * policy_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -790,8 +858,13 @@ if __name__ == "__main__":
                 m = next(momentum_scheduler)
                 for param_q, param_k in zip(encoder.parameters(), target_encoder.parameters()):
                     param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
-            train_loss += loss.item() * batch['x'].shape[0]
-            batch_bar.set_postfix(loss=f'{loss.item():.4f}')
+            batch_size = batch['x'].shape[0]
+            train_loss += loss.item() * batch_size
+            train_recon_loss += recon_loss.item() * batch_size
+            train_policy_loss += policy_loss.item() * batch_size
+            batch_bar.set_postfix(
+                loss=f'{loss.item():.4f}', policy=f'{policy_loss.item():.4f}'
+            )
 
         encoder.eval()
         predictor.eval()
@@ -805,7 +878,7 @@ if __name__ == "__main__":
                 policy_mask_clean = None
                 if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                         or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                        or args.use_smile_lean_v2):
+                        or args.use_smile_lean_v2 or args.use_smile_lean_policy):
                     policy_mask_clean = batch['mask'].clone()
                 enc_original_mask = None if (args.smile_no_mnar or args.use_smile_lean_samepretrain) else policy_mask_clean
                 h = target_encoder(**batch, original_mask=enc_original_mask)
@@ -817,14 +890,44 @@ if __name__ == "__main__":
                 else:
                     batch['x'], batch['mask'], pretrain_mask = random_masking(
                         batch['x'], batch['mask'], args.min_mask_ratio, args.max_mask_ratio)
-                z = encoder(**batch, original_mask=enc_original_mask)
+                if args.use_smile_lean_policy:
+                    z, policy_output = encoder(
+                        **batch,
+                        original_mask=enc_original_mask,
+                        return_policy=True,
+                    )
+                else:
+                    z = encoder(**batch, original_mask=enc_original_mask)
+                    policy_output = None
                 z = predictor(z)
-                val_loss += criterion(z[:, :, 1:], h[:, :, 1:], pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:])).item() * batch['x'].shape[0]
+                recon_loss = criterion(
+                    z[:, :, 1:], h[:, :, 1:],
+                    pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:]),
+                )
+                if policy_output is not None:
+                    policy_loss = causal_policy_bce(
+                        policy_output['logits'], policy_mask_clean, batch['lens']
+                    )
+                else:
+                    policy_loss = recon_loss.new_zeros(())
+                loss = recon_loss + args.policy_loss_weight * policy_loss
+                batch_size = batch['x'].shape[0]
+                val_loss += loss.item() * batch_size
+                val_recon_loss += recon_loss.item() * batch_size
+                val_policy_loss += policy_loss.item() * batch_size
         t_loss = train_loss / len(train_dataset) * args.world_size
         v_loss = val_loss / len(val_dataset)
+        t_recon = train_recon_loss / len(train_dataset) * args.world_size
+        t_policy = train_policy_loss / len(train_dataset) * args.world_size
+        v_recon = val_recon_loss / len(val_dataset)
+        v_policy = val_policy_loss / len(val_dataset)
         ema_val = v_loss if i == 1 else 0.3 * v_loss + 0.7 * ema_val
         epoch_bar.set_postfix(train=f'{t_loss:.4f}', val=f'{v_loss:.4f}', ema=f'{ema_val:.4f}')
-        log(logger, 'Epoch %d: Train Loss %.4f, Valid Loss %.4f, EMA Val %.4f' % (i, t_loss, v_loss, ema_val))
+        log(logger, 'Epoch %d: Train Loss %.4f (recon %.4f, policy %.4f), '
+                    'Valid Loss %.4f (recon %.4f, policy %.4f), EMA Val %.4f' % (
+                        i, t_loss, t_recon, t_policy,
+                        v_loss, v_recon, v_policy, ema_val,
+                    ))
         cur_mse = ema_val
         if args.save_last:
             # Save at final epoch (ensures model benefits from full training)

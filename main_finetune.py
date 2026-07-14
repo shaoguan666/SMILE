@@ -59,7 +59,7 @@ def _collect_predictions(args, dataloader):
                 batch[key] = batch[key].cuda()
             if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                     or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                    or args.use_smile_lean_v2):
+                    or args.use_smile_lean_v2 or args.use_smile_lean_policy):
                 policy_mask_clean = batch['mask'].clone()
             else:
                 policy_mask_clean = None
@@ -251,6 +251,20 @@ if __name__ == "__main__":
                         help='Use SMILELeanEncoder pretrained with same strategy as smart (random masking)')
     parser.add_argument('--use-smile-lean-v2', action='store_true', default=False,
                         help='Use SMILELeanV2Encoder (dynamic MNAR bias + policy embeddings + dual head)')
+    parser.add_argument('--use-smile-lean-policy', action='store_true', default=False,
+                        help='Use SMILELeanPolicyEncoder (strictly-causal D2 policy FiLM)')
+    parser.add_argument('--policy-conditioning', type=str, default='hidden',
+                        choices=['hidden', 'pi', 'residual', 'shuffled',
+                                 'density', 'time', 'no-policy'],
+                        help='Condition supplied to the additional policy FiLM pathway')
+    parser.add_argument('--policy-hidden-dim', type=int, default=64,
+                        help='Hidden width of the causal D2 policy encoder')
+    parser.add_argument('--policy-kernel-size', type=int, default=7,
+                        help='Left-causal temporal convolution kernel size')
+    parser.add_argument('--finetune-policy', action='store_true', default=False,
+                        help='Jointly finetune the causal policy encoder; default keeps it frozen')
+    parser.add_argument('--skip-test', action='store_true', default=False,
+                        help='Do not evaluate the held-out test set after validation selection')
     parser.add_argument('--obs-density-window', type=int, default=5,
                         help='Sliding window size for observation density embedding (must be odd)')
     # SMILE-v2 / SMILE-Lean ablation switches
@@ -324,6 +338,13 @@ if __name__ == "__main__":
     if args.use_smile_lean_samepretrain:
         from models.smart import SMILELeanEncoder as Encoder
         model_name = 'smart-smile-lean-samepretrain'
+    elif args.use_smile_lean_policy:
+        from models.smart import SMILELeanPolicyEncoder as Encoder
+        model_name = 'smart-smile-lean-policy'
+        if args.policy_conditioning != 'hidden':
+            model_name += '-' + args.policy_conditioning
+        if _abl_suffix:
+            model_name += '-' + _abl_suffix
     elif args.use_smile_lean_v2:
         from models.smart import SMILELeanV2Encoder as Encoder
         model_name = 'smart-smile-lean-v2'
@@ -463,6 +484,8 @@ if __name__ == "__main__":
     log(logger, 'Runtime init: variable order moved to CUDA.')
 
     encoder = Encoder(args).cuda()
+    if args.use_smile_lean_policy and not args.finetune_policy:
+        encoder.policy_encoder.requires_grad_(False)
     log(logger, 'Runtime init: encoder moved to CUDA.')
     if args.use_smile_lean_v2 and not args.abl_no_dual_head:
         from models.smart import DualHeadClassifier
@@ -568,7 +591,7 @@ if __name__ == "__main__":
             policy_mask_clean = None
             if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                     or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                    or args.use_smile_lean_v2):
+                    or args.use_smile_lean_v2 or args.use_smile_lean_policy):
                 policy_mask_clean = batch['mask'].clone()
                 batch['mask'] = apply_mnar_dropout(batch['mask'], current_mnar_drop)
             if i <= args.freeze_epochs:
@@ -595,7 +618,7 @@ if __name__ == "__main__":
                 policy_mask_clean = None
                 if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                         or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                        or args.use_smile_lean_v2):
+                        or args.use_smile_lean_v2 or args.use_smile_lean_policy):
                     policy_mask_clean = batch['mask'].clone()  # no dropout: val uses clean mask
                 h = encoder(**batch, original_mask=policy_mask_clean)
                 preds = classifier(h, original_mask=policy_mask_clean, **batch)
@@ -631,4 +654,7 @@ if __name__ == "__main__":
 
     if args.distributed:
         dist.barrier()
-    test(args, 'checkpoint-prc.pth', test_dataloader, val_dataloader)
+    if args.skip_test:
+        log(logger, 'Held-out test evaluation skipped by --skip-test.')
+    else:
+        test(args, 'checkpoint-prc.pth', test_dataloader, val_dataloader)

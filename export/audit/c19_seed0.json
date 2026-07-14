@@ -1,0 +1,223 @@
+{
+  "val": {
+    "prevalence": 0.19826549291610718,
+    "predictors": [
+      {
+        "predictor": "S1 static_var",
+        "macro_auprc": 0.19826548706366137,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.7764735257762979,
+        "brier": 0.06794464588165283,
+        "nll": 0.24689318239688873,
+        "ece": 0.0008858858662493087,
+        "transition_macro_auprc": 0.4478834372128805,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.5478091045405318,
+        "transition_brier": 0.0658100286363795,
+        "transition_nll": 0.24142062893338884,
+        "transition_prevalence": 0.10344977790866033
+      },
+      {
+        "predictor": "S2 static_tv",
+        "macro_auprc": 0.22070230815248382,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.8063637935484314,
+        "brier": 0.06556160002946854,
+        "nll": 0.2390400916337967,
+        "ece": 0.0009300668477725765,
+        "transition_macro_auprc": 0.5158103575167472,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.5626744198109281,
+        "transition_brier": 0.06542962148899002,
+        "transition_nll": 0.23868312468239725,
+        "transition_prevalence": 0.10344977790866033
+      },
+      {
+        "predictor": "S3 persistence",
+        "macro_auprc": 0.252866840248258,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.6037282179702118,
+        "brier": 0.10455761849880219,
+        "nll": 1.4016367197036743,
+        "ece": 0.10398596987133113,
+        "transition_macro_auprc": 0.10344977790866035,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.10344977790866033,
+        "transition_brier": 0.10344977790866033,
+        "transition_nll": 1.4292124272191638,
+        "transition_prevalence": 0.10344977790866033
+      },
+      {
+        "predictor": "S4 shallow-lin",
+        "macro_auprc": 0.2970665416868763,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.856018048029925,
+        "brier": 0.05800262466073036,
+        "nll": 0.2153574526309967,
+        "ece": 0.004612481490309536,
+        "transition_macro_auprc": 0.5461115694124461,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.6161263001115023,
+        "transition_brier": 0.057595935704353264,
+        "transition_nll": 0.21407847710090416,
+        "transition_prevalence": 0.10344977790866033
+      },
+      {
+        "predictor": "S4+ shallow+t",
+        "macro_auprc": 0.356215177485988,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.8854470546865817,
+        "brier": 0.050712086260318756,
+        "nll": 0.18642263114452362,
+        "ece": 0.004874614337920036,
+        "transition_macro_auprc": 0.6248405336574216,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.7037663337373973,
+        "transition_brier": 0.050160409123526394,
+        "transition_nll": 0.18457300073566482,
+        "transition_prevalence": 0.10344977790866033
+      },
+      {
+        "predictor": "D1 per-var",
+        "macro_auprc": 0.34983419409162814,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.8841619432107752,
+        "brier": 0.05010516569018364,
+        "nll": 0.18597331643104553,
+        "ece": 0.002943763809053578,
+        "transition_macro_auprc": 0.6241167646849606,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.7054036475496739,
+        "transition_brier": 0.0495365178801665,
+        "transition_nll": 0.18410638638700402,
+        "transition_prevalence": 0.10344977790866033
+      },
+      {
+        "predictor": "D1-wide",
+        "macro_auprc": 0.354562302126753,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.8852999512759003,
+        "brier": 0.04989533871412277,
+        "nll": 0.1851237565279007,
+        "ece": 0.003237868833433162,
+        "transition_macro_auprc": 0.6282004208254491,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.7074720415413802,
+        "transition_brier": 0.049322923095831105,
+        "transition_nll": 0.18324618952004015,
+        "transition_prevalence": 0.10344977790866033
+      },
+      {
+        "predictor": "D2 cross-var",
+        "macro_auprc": 0.4037748195990806,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.8978594024918638,
+        "brier": 0.047980766743421555,
+        "nll": 0.17594307661056519,
+        "ece": 0.0020935154152851936,
+        "transition_macro_auprc": 0.663019394531704,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.7322661451131517,
+        "transition_brier": 0.04735518428478626,
+        "transition_nll": 0.17381335000363105,
+        "transition_prevalence": 0.10344977790866033
+      },
+      {
+        "predictor": "D2-shuffled",
+        "macro_auprc": 0.3353774572244271,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.878701497479319,
+        "brier": 0.05115210637450218,
+        "nll": 0.19027277827262878,
+        "ece": 0.0006140852770059301,
+        "transition_macro_auprc": 0.6082752607327966,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.6921666959174684,
+        "transition_brier": 0.05061554410313923,
+        "transition_nll": 0.18853998241568531,
+        "transition_prevalence": 0.10344977790866033
+      },
+      {
+        "predictor": "D3 cross+val",
+        "macro_auprc": 0.40768303379654525,
+        "macro_vars_used": 34,
+        "micro_auprc": 0.8991409418235633,
+        "brier": 0.047783877700567245,
+        "nll": 0.17493362724781036,
+        "ece": 0.003500742764400634,
+        "transition_macro_auprc": 0.6668056332860488,
+        "transition_vars_used": 34,
+        "transition_micro_auprc": 0.7348631594048042,
+        "transition_brier": 0.04714923059403179,
+        "transition_nll": 0.17275512404111507,
+        "transition_prevalence": 0.10344977790866033
+      }
+    ]
+  },
+  "protocol": {
+    "audit_version": 4,
+    "dataset": "c19",
+    "split_seed": 42,
+    "model_seed": 0,
+    "batch_size": 64,
+    "epochs": 20,
+    "lr": 0.001,
+    "d_hidden": 64,
+    "kernel": 7,
+    "time_dim": 16,
+    "input_dim": 34,
+    "max_len": 60,
+    "train_size": 32268,
+    "val_size": 4033,
+    "test_size": 4034,
+    "split_contracts": {
+      "train": {
+        "records": 32268,
+        "min_len": 8,
+        "max_len": 60,
+        "mean_len": 36.49429775629106
+      },
+      "val": {
+        "records": 4033,
+        "min_len": 8,
+        "max_len": 60,
+        "mean_len": 36.66079841309199
+      },
+      "test": {
+        "records": 4034,
+        "min_len": 8,
+        "max_len": 60,
+        "mean_len": 36.38225086762519
+      }
+    },
+    "test_evaluated": false,
+    "decision_split": "val",
+    "strictly_causal": true,
+    "primary_model": "D2",
+    "param_counts": {
+      "S4": 287,
+      "S4plus": 7945,
+      "D1": 8137,
+      "D1wide": 23197,
+      "D2": 22921,
+      "D2shuf": 22921,
+      "D3": 38153
+    },
+    "d1wide_hidden": 124,
+    "transition_definition": "label z=1[m_t!=m_{t-1}] scored by q_flip=m_prev+pi-2*m_prev*pi",
+    "static_prior_padding_delta_mean": 0.07712828367948532,
+    "static_prior_padding_delta_max": 0.3501376509666443
+  },
+  "verdict": {
+    "decision_split": "val",
+    "d2_contrasts": {
+      "D2_minus_S4plus": 0.047559642113092604,
+      "D2_minus_D1wide": 0.04921251747232763,
+      "D2_minus_D2shuffled": 0.06839736237465355,
+      "D2_minus_S4plus_transition": 0.03817886087428235,
+      "D2_brier_minus_S4plus": -0.0027313195168972015,
+      "D2_transition_brier_minus_S4plus": -0.002805224838740135
+    },
+    "note": "Frozen paired decision + patient bootstrap in aggregate_audit.py."
+  }
+}

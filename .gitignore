@@ -50,3 +50,6 @@ experiments/**/results/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Observation Policy Audit: per-record score dumps (large, reproducible via scripts)
+export/audit/scores_*.npz

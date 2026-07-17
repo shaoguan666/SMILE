@@ -1,0 +1,19 @@
+{
+  "checkpoint": "checkpoint-prc.pth",
+  "checkpoint_epoch": 23,
+  "test_metrics": {
+    "auroc": 0.8605638260887614,
+    "auprc": 0.5751435208353987,
+    "minpse": 0.5287958115183246,
+    "f1_score": 0.5632653061224491
+  },
+  "validation_threshold_metrics": {
+    "auroc": 0.8605638260887614,
+    "auprc": 0.5751435208353987,
+    "minpse": 0.5287958115183246,
+    "precision": 0.4930232558139535,
+    "recall": 0.5549738219895288,
+    "f1": 0.5221674876847291,
+    "threshold": -0.40014344453811646
+  }
+}

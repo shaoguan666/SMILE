@@ -1,0 +1,85 @@
+{
+  "model": "ATENet",
+  "dataset": "mimic_decompensation",
+  "seed": 1,
+  "split_seed": 42,
+  "upstream_commit": "dc3149ca60f02dafd8e073b336479f280efa51e7",
+  "upstream_url": "https://github.com/shlee-labs/ATENet",
+  "upstream_local_patches": [
+    "device-aware random masks instead of hard-coded .cuda()",
+    "dtype-aware attention-mask sentinel for AMP compatibility"
+  ],
+  "selection_metric": "validation AUPRC",
+  "test": {
+    "auroc": 0.9082182996539319,
+    "auprc": 0.4979018129179907,
+    "n": 6251,
+    "positive_rate": 0.035674292113261875
+  },
+  "best_validation_auprc": 0.522721357495094,
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 1.1825197005630437,
+      "val_auroc": 0.8805961426066629,
+      "val_auprc": 0.40573632305579516,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.6693851163811552,
+      "val_auroc": 0.9003015780245471,
+      "val_auprc": 0.4642394024970099,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.6474006252480031,
+      "val_auroc": 0.9097066043249562,
+      "val_auprc": 0.522721357495094,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.6260756312157576,
+      "val_auroc": 0.9073150204558738,
+      "val_auprc": 0.4792867201234705,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.6195203318631739,
+      "val_auroc": 0.902104032729398,
+      "val_auprc": 0.4704829793008536,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.6214913806819676,
+      "val_auroc": 0.9047714786674459,
+      "val_auprc": 0.41702853044550514,
+      "skipped_nonfinite_batches": 0
+    }
+  ],
+  "config": {
+    "dataset": "mimic_decompensation",
+    "seed": 1,
+    "split_seed": 42,
+    "epochs": 10,
+    "batch_size": 256,
+    "hidden": 32,
+    "embed_time": 128,
+    "num_heads": 2,
+    "lr": 0.001,
+    "alpha": 0.01,
+    "beta": 0.1,
+    "weight_decay": 0.0,
+    "num_workers": 0,
+    "patience": 3,
+    "amp": false,
+    "limit_train": 0,
+    "limit_val": 0,
+    "limit_test": 0,
+    "output_root": "D:\\\u5b9e\u9a8c\u5ba4\\mamba-cde\\SMILE\\export\\recent_baselines"
+  }
+}

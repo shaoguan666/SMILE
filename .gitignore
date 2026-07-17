@@ -17,6 +17,7 @@ env/
 
 # Data archives, raw data, and processed dataset artifacts
 data.zip
+/data (2).zip
 data/**/*.pkl
 data/**/stat.pkl
 data/**/raw/
@@ -34,6 +35,7 @@ logs/
 figs/
 analysis/results/
 experiments/**/results/
+/export/audit/*.npz
 
 # Model artifacts and logs
 *.pth

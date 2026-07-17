@@ -1,0 +1,51 @@
+{
+  "model": "ATENet",
+  "dataset": "mimic_mortality",
+  "seeds": [
+    1,
+    42,
+    3407
+  ],
+  "split_seed": 42,
+  "precision": "fp32",
+  "selection_metric": "validation AUPRC",
+  "runs": [
+    {
+      "seed": 1,
+      "auroc": 0.8504879133916654,
+      "auprc": 0.48369152238352375,
+      "n": 2114,
+      "amp": false,
+      "skipped_nonfinite_batches": 0,
+      "artifact": "export\\recent_baselines\\mimic_mortality\\atenet\\seed_1\\eval_results.json"
+    },
+    {
+      "seed": 42,
+      "auroc": 0.8561115230609521,
+      "auprc": 0.5026141647271112,
+      "n": 2114,
+      "amp": false,
+      "skipped_nonfinite_batches": 0,
+      "artifact": "export\\recent_baselines\\mimic_mortality\\atenet\\seed_42\\eval_results.json"
+    },
+    {
+      "seed": 3407,
+      "auroc": 0.8520223441593751,
+      "auprc": 0.5043588655509701,
+      "n": 2114,
+      "amp": false,
+      "skipped_nonfinite_batches": 0,
+      "artifact": "export\\recent_baselines\\mimic_mortality\\atenet\\seed_3407\\eval_results.json"
+    }
+  ],
+  "test": {
+    "auroc": {
+      "mean": 0.8528739268706642,
+      "sample_std": 0.0029069126687515895
+    },
+    "auprc": {
+      "mean": 0.496888184220535,
+      "sample_std": 0.01146188937180583
+    }
+  }
+}

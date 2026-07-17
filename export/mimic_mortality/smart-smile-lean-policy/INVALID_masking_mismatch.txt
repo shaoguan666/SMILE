@@ -1,0 +1,13 @@
+INVALID - do not use in paper tables.
+
+Reason: use_smile_lean_policy is not included in uses_structured_masking()
+(main_pretrain.py:108), so these runs logged:
+  [Mask Groups] structured masking disabled; supplied config is not consumed.
+They used random temporal masking, while smart-smile-lean used the structured
+mask-group curriculum -> the comparison is NOT apples-to-apples.
+
+Also observed: mimic_decompensation policy pretrain diverged (recon 0.074->0.236)
+under this wrong masking regime; mimic_mortality converged. Re-run required after
+uses_structured_masking() is fixed.
+
+Stamped: 2026-07-14

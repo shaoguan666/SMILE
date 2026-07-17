@@ -1,0 +1,113 @@
+{
+  "model": "ATENet",
+  "dataset": "mimic_mortality",
+  "seed": 3407,
+  "split_seed": 42,
+  "upstream_commit": "dc3149ca60f02dafd8e073b336479f280efa51e7",
+  "upstream_url": "https://github.com/shlee-labs/ATENet",
+  "upstream_local_patches": [
+    "device-aware random masks instead of hard-coded .cuda()",
+    "dtype-aware attention-mask sentinel for AMP compatibility"
+  ],
+  "selection_metric": "validation AUPRC",
+  "test": {
+    "auroc": 0.8520223441593751,
+    "auprc": 0.5043588655509701,
+    "n": 2114,
+    "positive_rate": 0.13008514664143803
+  },
+  "best_validation_auprc": 0.47491991592020394,
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 1.044500422417081,
+      "val_auroc": 0.8123536323990631,
+      "val_auprc": 0.4294148719728791,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.7539026734956719,
+      "val_auroc": 0.8244871444767178,
+      "val_auprc": 0.43666046949475273,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.726852374888871,
+      "val_auroc": 0.836626862954412,
+      "val_auprc": 0.44916151434058565,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.7255997823199393,
+      "val_auroc": 0.8300315285122017,
+      "val_auprc": 0.43240959986752747,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.7167788776831839,
+      "val_auroc": 0.8285337173026158,
+      "val_auprc": 0.44945479955380724,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.7153626523482705,
+      "val_auroc": 0.8315458901218937,
+      "val_auprc": 0.44491066920403316,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 7,
+      "train_loss": 0.7183296513757691,
+      "val_auroc": 0.8375578229603701,
+      "val_auprc": 0.45802088295178306,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 8,
+      "train_loss": 0.7113578680012053,
+      "val_auroc": 0.8335278005345779,
+      "val_auprc": 0.4530057229983143,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 9,
+      "train_loss": 0.711219879095334,
+      "val_auroc": 0.84341873339788,
+      "val_auprc": 0.47491991592020394,
+      "skipped_nonfinite_batches": 0
+    },
+    {
+      "epoch": 10,
+      "train_loss": 0.7039042926816197,
+      "val_auroc": 0.8345870261413569,
+      "val_auprc": 0.4594116562417149,
+      "skipped_nonfinite_batches": 0
+    }
+  ],
+  "config": {
+    "dataset": "mimic_mortality",
+    "seed": 3407,
+    "split_seed": 42,
+    "epochs": 10,
+    "batch_size": 256,
+    "hidden": 32,
+    "embed_time": 128,
+    "num_heads": 2,
+    "lr": 0.001,
+    "alpha": 0.01,
+    "beta": 0.1,
+    "weight_decay": 0.0,
+    "num_workers": 0,
+    "patience": 3,
+    "amp": false,
+    "limit_train": 0,
+    "limit_val": 0,
+    "limit_test": 0,
+    "output_root": "D:\\\u5b9e\u9a8c\u5ba4\\mamba-cde\\SMILE\\export\\recent_baselines"
+  }
+}

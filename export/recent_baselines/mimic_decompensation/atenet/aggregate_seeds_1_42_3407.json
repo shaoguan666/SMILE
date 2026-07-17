@@ -1,0 +1,51 @@
+{
+  "model": "ATENet",
+  "dataset": "mimic_decompensation",
+  "seeds": [
+    1,
+    42,
+    3407
+  ],
+  "split_seed": 42,
+  "precision": "fp32",
+  "selection_metric": "validation AUPRC",
+  "runs": [
+    {
+      "seed": 1,
+      "auroc": 0.9082182996539319,
+      "auprc": 0.4979018129179907,
+      "n": 6251,
+      "amp": false,
+      "skipped_nonfinite_batches": 0,
+      "artifact": "export\\recent_baselines\\mimic_decompensation\\atenet\\seed_1\\eval_results.json"
+    },
+    {
+      "seed": 42,
+      "auroc": 0.9063830673597947,
+      "auprc": 0.5142642912606101,
+      "n": 6251,
+      "amp": false,
+      "skipped_nonfinite_batches": 0,
+      "artifact": "export\\recent_baselines\\mimic_decompensation\\atenet\\seed_42\\eval_results.json"
+    },
+    {
+      "seed": 3407,
+      "auroc": 0.9141123188944864,
+      "auprc": 0.5081887824324758,
+      "n": 6251,
+      "amp": false,
+      "skipped_nonfinite_batches": 0,
+      "artifact": "export\\recent_baselines\\mimic_decompensation\\atenet\\seed_3407\\eval_results.json"
+    }
+  ],
+  "test": {
+    "auroc": {
+      "mean": 0.909571228636071,
+      "sample_std": 0.00403833442704633
+    },
+    "auprc": {
+      "mean": 0.5067849622036922,
+      "sample_std": 0.008271076580725697
+    }
+  }
+}

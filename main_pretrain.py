@@ -13,9 +13,17 @@ from tqdm import tqdm
 from data.challenge2012 import load_challenge_2012
 from data.challenge2019 import load_challenge_2019
 from data.mimiciii import load_mimic_iii_mortality, load_mimic_iii_phenotyping, load_mimic_iii_decompensation, load_mimic_iii_lengthofstay
-from data.dataloader import collate_fn
+from data.dataloader import collate_fn, DeterministicShuffledHistoryDataset
 from data.feature_registry import REGISTRY_VERSION, registry_fingerprint
 from models.smart import EmbeddingDecoder
+from models.odp import causal_policy_bce, POLICY_LOSS_WEIGHT
+from utils.odp_metrics import (
+    forecasting_metrics,
+    gather_forecast_records,
+    make_forecast_records,
+    prior_records,
+    training_variable_prior,
+)
 from utils.utils import (
     set_seed,
     distributed_init,
@@ -39,6 +47,14 @@ def random_masking(x, original_mask, min_mask_ratio, max_mask_ratio):
     mask = torch.rand_like(x) < mask_ratios.view(-1, 1, 1)
     x = x * (~mask)  # True for reconstruction, False for original
     return x, original_mask * (~mask),  original_mask * mask
+
+
+def apply_pretrain_checkpoint_rule(args, uses_curriculum):
+    """Keep legacy behavior while locking ODP to validation joint-loss selection."""
+    if uses_curriculum and not args.save_last and args.odp_model == 'none':
+        args.save_last = True
+    if args.odp_model != 'none':
+        args.save_last = False
 
 
 # ── PMAE v1: Variable-level proportional masking ──────────────────────────────
@@ -110,6 +126,7 @@ def uses_structured_masking(args):
     uses_smile = (
         args.use_smile or args.use_smile_film or args.use_smile_v2
         or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_v2
+        or args.odp_model != 'none'
     )
     if not uses_smile or args.use_mnar or args.use_smile_lean_samepretrain:
         return False
@@ -351,7 +368,7 @@ def test(args, checkpoint_path, test_dataloader):
             policy_mask_clean = None
             if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                     or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                    or args.use_smile_lean_v2):
+                    or args.use_smile_lean_v2 or args.odp_model != 'none'):
                 policy_mask_clean = batch['mask'].clone()
             original_mask = None if (args.smile_no_mnar or args.use_smile_lean_samepretrain) else policy_mask_clean
             with torch.no_grad():
@@ -420,6 +437,18 @@ if __name__ == "__main__":
                         help='Use SMILELeanEncoder with same pretrain as smart (random masking, no MNAR)')
     parser.add_argument('--use-smile-lean-v2', action='store_true', default=False,
                         help='Use SMILELeanV2Encoder (dynamic MNAR bias + policy embeddings)')
+    parser.add_argument('--odp-model', choices=['none', 'nocomiss-base', 'nocomiss-density',
+                        'late', 'late-shuffled', 'nocomiss-pmatch'], default='none',
+                        help='Explicit bounded ODP redesign/control architecture.')
+    parser.add_argument('--model-id', type=str, default=None,
+                        help='Explicit experiment directory name supplied by the runner.')
+    parser.add_argument('--forecast-mode', choices=['none', 'prior', 'time', 'own', 'full',
+                        'shuffled'], default='none')
+    parser.add_argument('--policy-hidden-dim', type=int, default=64)
+    parser.add_argument('--policy-kernel-size', type=int, default=7)
+    parser.add_argument('--policy-loss-weight', type=float, default=POLICY_LOSS_WEIGHT)
+    parser.add_argument('--skip-test', action='store_true',
+                        help='Do not create, iterate or evaluate the held-out test loader.')
     parser.add_argument('--use-mnar', action='store_true', default=False,
                         help='Use simplified MNAREncoder (no curriculum masking)')
     parser.add_argument('--save-last', action='store_true', default=False,
@@ -495,7 +524,37 @@ if __name__ == "__main__":
         'global-comiss': args.abl_global_comiss,
     }
     _abl_suffix = '-'.join(k for k, v in _abl_flags.items() if v)
-    if args.use_smile_lean_samepretrain:
+    if args.policy_hidden_dim != 64 or args.policy_kernel_size != 7:
+        raise ValueError('ODP redesign locks policy_hidden_dim=64 and policy_kernel_size=7.')
+    if args.policy_loss_weight != POLICY_LOSS_WEIGHT:
+        raise ValueError('ODP redesign locks policy_loss_weight=0.1.')
+    if args.odp_model != 'none':
+        if args.odp_model == 'nocomiss-base':
+            from models.odp import NoCoMissClinicalEncoder
+            Encoder = lambda ns: NoCoMissClinicalEncoder(ns, use_density=False)
+        elif args.odp_model == 'nocomiss-density':
+            from models.odp import NoCoMissClinicalEncoder
+            Encoder = lambda ns: NoCoMissClinicalEncoder(ns, use_density=True)
+        elif args.odp_model == 'late':
+            from models.odp import ODPLateFusionEncoder
+            Encoder = lambda ns: ODPLateFusionEncoder(
+                ns, forecast_mode=ns.forecast_mode if ns.forecast_mode != 'none' else 'full')
+        elif args.odp_model == 'late-shuffled':
+            from models.odp import ODPLateFusionEncoder
+            Encoder = lambda ns: ODPLateFusionEncoder(ns, shuffled=True)
+        else:
+            from models.odp import ParameterMatchedAdapterEncoder as Encoder
+        model_name = args.model_id or {
+            'nocomiss-base': 'smart-smile-lean-nocomiss-base',
+            'nocomiss-density': 'smart-smile-lean-nocomiss-density',
+            'late': 'smart-smile-lean-odp-late',
+            'late-shuffled': 'smart-smile-lean-odp-late-shuffled',
+            'nocomiss-pmatch': 'smart-smile-lean-nocomiss-pmatch',
+        }[args.odp_model]
+    elif args.forecast_mode == 'prior':
+        Encoder = None
+        model_name = args.model_id or 'odp-forecast-prior'
+    elif args.use_smile_lean_samepretrain:
         from models.smart import SMILELeanEncoder as Encoder
         model_name = 'smart-smile-lean-samepretrain'
     elif args.use_smile_lean_v2:
@@ -563,14 +622,19 @@ if __name__ == "__main__":
         and not args.smile_no_curriculum
         and not args.smile_stratified
         and (args.use_smile or args.use_smile_film or args.use_smile_lean
-             or args.use_smile_v2 or args.use_smile_v2_film or args.use_smile_lean_v2)
+             or args.use_smile_v2 or args.use_smile_v2_film or args.use_smile_lean_v2
+             or args.odp_model != 'none')
     )
-    if _uses_curriculum and not args.save_last:
-        args.save_last = True
+    # All learned forecasting conditions use the same validation joint
+    # pretraining loss checkpoint rule; never inherit the legacy curriculum
+    # save-last exception.
+    apply_pretrain_checkpoint_rule(args, _uses_curriculum)
     if getattr(args, 'pretrain_mask_mode', 'fixed') == 'proportional_var':
         model_name = model_name + '-pmae'
     if getattr(args, 'run_tag', None):
         model_name = f'{model_name}-{args.run_tag}'
+    if args.model_id:
+        model_name = args.model_id
     args.save_dir = os.path.join(args.save_dir, args.dataset, model_name, f'seed_{args.seed}')
     distributed_init(args)
     configure_torch_runtime()
@@ -627,6 +691,29 @@ if __name__ == "__main__":
         )
     else:
         raise Exception("Dataset not exist!")
+    if args.forecast_mode == 'shuffled' or args.odp_model == 'late-shuffled':
+        train_dataset = DeterministicShuffledHistoryDataset(
+            train_dataset, 'train', args.seed, train=True)
+        val_dataset = DeterministicShuffledHistoryDataset(
+            val_dataset, 'validation', args.seed, train=False)
+        if not args.skip_test:
+            test_dataset = DeterministicShuffledHistoryDataset(
+                test_dataset, 'test', args.seed, train=False)
+    if args.forecast_mode == 'prior':
+        prior = training_variable_prior(train_dataset)
+        records = prior_records(val_dataset, prior)
+        result = {
+            'mode': 'prior',
+            'primary': forecasting_metrics(records, include_t0=False),
+            'secondary': forecasting_metrics(records, include_t0=True),
+            'source': 'training split t>=1 prevalence only',
+        }
+        if args.local_rank == 0:
+            os.makedirs(args.save_dir, exist_ok=True)
+            with open(os.path.join(args.save_dir, 'forecasting_validation.json'), 'w', encoding='utf-8') as handle:
+                json.dump(result, handle, indent=2)
+        log(logger, '[ODP] analytic prior validation complete; held-out test not touched.')
+        raise SystemExit(0)
     if args.data_dropout > 0:
         train_dataset.dropout_data(args.data_dropout)
         val_dataset.dropout_data(args.data_dropout)
@@ -647,11 +734,11 @@ if __name__ == "__main__":
         if args.distributed:
             train_sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, shuffle=True, drop_last=True)
             val_sampler = SequentialSampler(val_dataset)
-            test_sampler = SequentialSampler(test_dataset)
+            test_sampler = None if args.skip_test else SequentialSampler(test_dataset)
         else:
             train_sampler = RandomSampler(train_dataset)
             val_sampler = SequentialSampler(val_dataset)
-            test_sampler = SequentialSampler(test_dataset)
+            test_sampler = None if args.skip_test else SequentialSampler(test_dataset)
         train_dataloader = DataLoader(
             train_dataset, batch_size=args.batch_size, sampler=train_sampler,
             collate_fn=collate_fn, **dataloader_kwargs
@@ -660,10 +747,12 @@ if __name__ == "__main__":
             val_dataset, batch_size=args.batch_size, sampler=val_sampler,
             collate_fn=collate_fn, **dataloader_kwargs
         )
-        test_dataloader = DataLoader(
-            test_dataset, batch_size=args.batch_size, sampler=test_sampler,
-            collate_fn=collate_fn, **dataloader_kwargs
-        )
+        test_dataloader = None
+        if not args.skip_test:
+            test_dataloader = DataLoader(
+                test_dataset, batch_size=args.batch_size, sampler=test_sampler,
+                collate_fn=collate_fn, **dataloader_kwargs
+            )
 
     var_order_idx, inv_order_idx = get_variable_order(
         args.dataset.split('_')[0] if args.dataset.startswith('mimic') else args.dataset
@@ -739,11 +828,14 @@ if __name__ == "__main__":
     for i in epoch_bar:
         train_loss = 0
         val_loss = 0
+        forecast_result = None
         encoder.train()
         predictor.train()
         target_encoder.eval()  # EMA target: eval mode prevents dropout noise in targets
         if args.distributed and isinstance(train_sampler, DistributedSampler):
             train_sampler.set_epoch(i - 1)
+        if hasattr(train_dataset, 'set_epoch'):
+            train_dataset.set_epoch(i - 1)
         # Scheme D: build per-epoch stratified schedule (deterministic shuffle)
         if args.smile_stratified:
             _strat_schedule = _build_stratified_schedule(
@@ -789,9 +881,18 @@ if __name__ == "__main__":
             else:
                 batch['x'], batch['mask'], pretrain_mask = masking_fn(
                     batch['x'], batch['mask'], args.min_mask_ratio, args.max_mask_ratio)
-            z = encoder(**batch, original_mask=enc_original_mask)
+            policy_output = None
+            if args.odp_model in ('late', 'late-shuffled'):
+                z, policy_output = encoder(
+                    **batch, original_mask=policy_mask_clean, return_policy=True)
+            else:
+                z = encoder(**batch, original_mask=enc_original_mask)
             z = predictor(z)
-            loss = criterion(z[:, :, 1:], h[:, :, 1:], pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:]))
+            recon_loss = criterion(z[:, :, 1:], h[:, :, 1:], pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:]))
+            policy_loss = (causal_policy_bce(
+                policy_output['logits'], policy_mask_clean, batch['lens'])
+                if policy_output is not None else recon_loss.new_zeros(()))
+            loss = recon_loss + args.policy_loss_weight * policy_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -805,6 +906,7 @@ if __name__ == "__main__":
         encoder.eval()
         predictor.eval()
         target_encoder.eval()
+        forecast_records = []
         with torch.no_grad():
             for batch in val_dataloader:
                 for key in batch:
@@ -814,7 +916,7 @@ if __name__ == "__main__":
                 policy_mask_clean = None
                 if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                         or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                        or args.use_smile_lean_v2):
+                        or args.use_smile_lean_v2 or args.odp_model != 'none'):
                     policy_mask_clean = batch['mask'].clone()
                 enc_original_mask = None if (args.smile_no_mnar or args.use_smile_lean_samepretrain) else policy_mask_clean
                 h = target_encoder(**batch, original_mask=enc_original_mask)
@@ -826,14 +928,40 @@ if __name__ == "__main__":
                 else:
                     batch['x'], batch['mask'], pretrain_mask = random_masking(
                         batch['x'], batch['mask'], args.min_mask_ratio, args.max_mask_ratio)
-                z = encoder(**batch, original_mask=enc_original_mask)
+                policy_output = None
+                if args.odp_model in ('late', 'late-shuffled'):
+                    z, policy_output = encoder(
+                        **batch, original_mask=policy_mask_clean, return_policy=True)
+                else:
+                    z = encoder(**batch, original_mask=enc_original_mask)
                 z = predictor(z)
-                val_loss += criterion(z[:, :, 1:], h[:, :, 1:], pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:])).item() * batch['x'].shape[0]
+                recon_loss = criterion(z[:, :, 1:], h[:, :, 1:], pretrain_mask.permute(0, 2, 1).unsqueeze(-1).expand_as(z[:, :, 1:]))
+                policy_loss = (causal_policy_bce(
+                    policy_output['logits'], policy_mask_clean, batch['lens'])
+                    if policy_output is not None else recon_loss.new_zeros(()))
+                joint_loss = recon_loss + args.policy_loss_weight * policy_loss
+                val_loss += joint_loss.item() * batch['x'].shape[0]
+                if policy_output is not None:
+                    forecast_records.extend(make_forecast_records(
+                        policy_output['prob'], policy_mask_clean, batch['lens'], batch['sample_id']))
         t_loss = train_loss / len(train_dataset) * args.world_size
         v_loss = val_loss / len(val_dataset)
         ema_val = v_loss if i == 1 else 0.3 * v_loss + 0.7 * ema_val
         epoch_bar.set_postfix(train=f'{t_loss:.4f}', val=f'{v_loss:.4f}', ema=f'{ema_val:.4f}')
         log(logger, 'Epoch %d: Train Loss %.4f, Valid Loss %.4f, EMA Val %.4f' % (i, t_loss, v_loss, ema_val))
+        if forecast_records:
+            global_records = gather_forecast_records(forecast_records)
+            forecast_result = {
+                'mode': args.forecast_mode if args.forecast_mode != 'none' else (
+                    'shuffled' if args.odp_model == 'late-shuffled' else 'full'),
+                'epoch': i,
+                'checkpoint_selection_loss': v_loss,
+                'primary': forecasting_metrics(global_records, include_t0=False),
+                'secondary': forecasting_metrics(global_records, include_t0=True),
+            }
+            if args.local_rank == 0:
+                with open(os.path.join(args.save_dir, f'forecasting_validation_epoch_{i}.json'), 'w', encoding='utf-8') as handle:
+                    json.dump(forecast_result, handle, indent=2)
         cur_mse = ema_val
         if args.save_last:
             # Save at final epoch (ensures model benefits from full training)
@@ -842,10 +970,14 @@ if __name__ == "__main__":
                     'encoder': encoder.state_dict(),
                     'predictor': predictor.state_dict(),
                     'target_encoder': target_encoder.state_dict(),
-                    'epoch': i
+                    'epoch': i,
+                    'forecasting_validation': forecast_result,
                 }
                 log(logger, '----- Save last epoch model - L1: %.4f -----' % cur_mse)
                 torch.save(state, os.path.join(args.save_dir, 'checkpoint-mse.pth'))
+                if forecast_result is not None:
+                    with open(os.path.join(args.save_dir, 'forecasting_validation.json'), 'w', encoding='utf-8') as handle:
+                        json.dump(forecast_result, handle, indent=2)
         elif cur_mse < best_mse:
             best_mse = cur_mse
             if args.local_rank == 0:
@@ -853,13 +985,20 @@ if __name__ == "__main__":
                     'encoder': encoder.state_dict(),
                     'predictor': predictor.state_dict(),
                     'target_encoder': target_encoder.state_dict(),
-                    'epoch': i
+                    'epoch': i,
+                    'forecasting_validation': forecast_result,
                 }
                 log(logger, '----- Save best model - L1: %.4f -----' % cur_mse)
                 torch.save(state, os.path.join(args.save_dir, 'checkpoint-mse.pth'))
+                if forecast_result is not None:
+                    with open(os.path.join(args.save_dir, 'forecasting_validation.json'), 'w', encoding='utf-8') as handle:
+                        json.dump(forecast_result, handle, indent=2)
         if args.distributed:
             dist.barrier()
 
     if args.distributed:
         dist.barrier()
-    test(args, 'checkpoint-mse.pth', test_dataloader)
+    if args.skip_test:
+        log(logger, 'Held-out test skipped by --skip-test; no test metrics were computed.')
+    else:
+        test(args, 'checkpoint-mse.pth', test_dataloader)

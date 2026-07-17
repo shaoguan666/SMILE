@@ -14,8 +14,10 @@ from tqdm import tqdm
 from data.challenge2012 import load_challenge_2012
 from data.challenge2019 import load_challenge_2019
 from data.mimiciii import load_mimic_iii_mortality, load_mimic_iii_phenotyping, load_mimic_iii_decompensation, load_mimic_iii_lengthofstay
-from data.dataloader import collate_fn
+from data.dataloader import collate_fn, DeterministicShuffledHistoryDataset
 from models.smart import Classifier
+from models.odp import causal_policy_bce, POLICY_LOSS_WEIGHT
+from utils.odp_metrics import forecasting_metrics, gather_forecast_records, make_forecast_records
 from utils.metrics import print_metrics_binary, print_metrics_multilabel, print_metrics_regression
 from utils.utils import (
     set_seed,
@@ -49,9 +51,58 @@ def apply_mnar_dropout(original_mask, dropout_rate=0.05):
     return original_mask * (~drop)
 
 
+def _unwrap_model(model):
+    return model.module if hasattr(model, 'module') else model
+
+
+def set_clinical_backbone_trainable(model, trainable):
+    """Freeze only the clinical backbone, never policy/fusion/adapter branches."""
+    root = _unwrap_model(model)
+    clinical = getattr(root, 'clinical', root)
+    for parameter in clinical.parameters():
+        parameter.requires_grad = bool(trainable)
+
+
+def _gather_task_records(labels, preds, sample_ids):
+    """Globally gather and de-duplicate task outputs by stable sample id."""
+    local = []
+    for index, sample_id in enumerate(sample_ids.tolist()):
+        local.append({
+            'sample_id': int(sample_id),
+            'label': labels[index].detach().cpu().numpy(),
+            'pred': preds[index].detach().cpu().numpy(),
+        })
+    shards = [local]
+    if dist.is_available() and dist.is_initialized():
+        shards = [None for _ in range(dist.get_world_size())]
+        dist.all_gather_object(shards, local)
+    unique = {}
+    for shard in shards:
+        for record in shard:
+            unique.setdefault(record['sample_id'], record)
+    ordered = [unique[key] for key in sorted(unique)]
+    labels_out = torch.as_tensor(np.stack([item['label'] for item in ordered]))
+    preds_out = torch.as_tensor(np.stack([item['pred'] for item in ordered]))
+    return labels_out, preds_out
+
+
+def _collect_policy_records(dataloader):
+    records = []
+    with torch.no_grad():
+        for batch in dataloader:
+            for key in batch:
+                batch[key] = batch[key].cuda(non_blocking=True)
+            clean = batch['mask'].clone()
+            _, output = encoder(**batch, original_mask=clean, return_policy=True)
+            records.extend(make_forecast_records(
+                output['prob'], clean, batch['lens'], batch['sample_id']))
+    return gather_forecast_records(records)
+
+
 def _collect_predictions(args, dataloader):
     preds_all = []
     labels_all = []
+    sample_ids_all = []
     loss_total = 0
     with torch.no_grad():
         for batch in dataloader:
@@ -59,7 +110,7 @@ def _collect_predictions(args, dataloader):
                 batch[key] = batch[key].cuda()
             if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                     or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                    or args.use_smile_lean_v2):
+                    or args.use_smile_lean_v2 or args.odp_model != 'none'):
                 policy_mask_clean = batch['mask'].clone()
             else:
                 policy_mask_clean = None
@@ -68,7 +119,10 @@ def _collect_predictions(args, dataloader):
             loss_total += criterion(preds, batch['labels']).item() * batch['x'].shape[0]
             preds_all.append(preds.cpu())
             labels_all.append(batch['labels'].cpu())
-    return torch.cat(labels_all), torch.cat(preds_all), loss_total
+            sample_ids_all.append(batch['sample_id'].cpu())
+    labels_all, preds_all = _gather_task_records(
+        torch.cat(labels_all), torch.cat(preds_all), torch.cat(sample_ids_all))
+    return labels_all, preds_all, loss_total
 
 
 def _best_f1_threshold(y_true, probs):
@@ -229,6 +283,8 @@ if __name__ == "__main__":
                         help='Directory containing pretrained checkpoint-mse.pth. Defaults to save_dir.')
     parser.add_argument('--eval-only', action='store_true',
                         help='Evaluate save_dir/checkpoint-prc.pth without pretraining or finetuning.')
+    parser.add_argument('--validation-only', action='store_true',
+                        help='Evaluate checkpoint-prc.pth on validation only; never touch held-out test.')
     parser.add_argument('--split-seed', type=int, default=42,
                         help='Fixed patient split seed used consistently with pretraining.')
     parser.add_argument('--local-rank', type=int, default=0)
@@ -251,6 +307,16 @@ if __name__ == "__main__":
                         help='Use SMILELeanEncoder pretrained with same strategy as smart (random masking)')
     parser.add_argument('--use-smile-lean-v2', action='store_true', default=False,
                         help='Use SMILELeanV2Encoder (dynamic MNAR bias + policy embeddings + dual head)')
+    parser.add_argument('--odp-model', choices=['none', 'nocomiss-base', 'nocomiss-density',
+                        'late', 'late-shuffled', 'nocomiss-pmatch'], default='none')
+    parser.add_argument('--model-id', type=str, default=None)
+    parser.add_argument('--forecast-mode', choices=['none', 'time', 'own', 'full', 'shuffled'],
+                        default='none')
+    parser.add_argument('--policy-hidden-dim', type=int, default=64)
+    parser.add_argument('--policy-kernel-size', type=int, default=7)
+    parser.add_argument('--lambda-policy', type=float, default=POLICY_LOSS_WEIGHT)
+    parser.add_argument('--skip-test', action='store_true',
+                        help='Validation-only selection: never create or evaluate held-out test data.')
     parser.add_argument('--obs-density-window', type=int, default=5,
                         help='Sliding window size for observation density embedding (must be odd)')
     # SMILE-v2 / SMILE-Lean ablation switches
@@ -303,6 +369,16 @@ if __name__ == "__main__":
     parser.add_argument('--los-save-metric', choices=['auc_micro', 'auc_macro'], default='auc_micro',
                         help='Model selection metric for LoS classification.')
     args = parser.parse_args()
+    if args.eval_only and args.validation_only:
+        parser.error('--eval-only and --validation-only are mutually exclusive')
+    if args.eval_only and args.skip_test:
+        parser.error('--eval-only and --skip-test are mutually exclusive')
+    if args.validation_only:
+        args.skip_test = True
+    if args.policy_hidden_dim != 64 or args.policy_kernel_size != 7:
+        raise ValueError('ODP redesign locks policy_hidden_dim=64 and policy_kernel_size=7.')
+    if args.lambda_policy != POLICY_LOSS_WEIGHT:
+        raise ValueError('ODP redesign locks lambda_policy=0.1.')
     if args.dataset in ('c12', 'c19') and args.split_seed != 42:
         raise ValueError(f'{args.dataset} loaders currently expose only the fixed split seed 42.')
     # Build ablation suffix for architecture variants
@@ -321,7 +397,30 @@ if __name__ == "__main__":
         'no-dual-head': args.abl_no_dual_head,
     }
     _abl_suffix = '-'.join(k for k, v in _abl_flags.items() if v)
-    if args.use_smile_lean_samepretrain:
+    if args.odp_model != 'none':
+        if args.odp_model == 'nocomiss-base':
+            from models.odp import NoCoMissClinicalEncoder
+            Encoder = lambda ns: NoCoMissClinicalEncoder(ns, use_density=False)
+        elif args.odp_model == 'nocomiss-density':
+            from models.odp import NoCoMissClinicalEncoder
+            Encoder = lambda ns: NoCoMissClinicalEncoder(ns, use_density=True)
+        elif args.odp_model == 'late':
+            from models.odp import ODPLateFusionEncoder
+            Encoder = lambda ns: ODPLateFusionEncoder(
+                ns, forecast_mode=ns.forecast_mode if ns.forecast_mode != 'none' else 'full')
+        elif args.odp_model == 'late-shuffled':
+            from models.odp import ODPLateFusionEncoder
+            Encoder = lambda ns: ODPLateFusionEncoder(ns, shuffled=True)
+        else:
+            from models.odp import ParameterMatchedAdapterEncoder as Encoder
+        model_name = args.model_id or {
+            'nocomiss-base': 'smart-smile-lean-nocomiss-base',
+            'nocomiss-density': 'smart-smile-lean-nocomiss-density',
+            'late': 'smart-smile-lean-odp-late',
+            'late-shuffled': 'smart-smile-lean-odp-late-shuffled',
+            'nocomiss-pmatch': 'smart-smile-lean-nocomiss-pmatch',
+        }[args.odp_model]
+    elif args.use_smile_lean_samepretrain:
         from models.smart import SMILELeanEncoder as Encoder
         model_name = 'smart-smile-lean-samepretrain'
     elif args.use_smile_lean_v2:
@@ -379,6 +478,8 @@ if __name__ == "__main__":
         model_name = 'smart'
     if getattr(args, 'run_tag', None):
         model_name = f'{model_name}-{args.run_tag}'
+    if args.model_id:
+        model_name = args.model_id
     args.save_dir = os.path.join(args.save_dir, args.dataset, model_name, f'seed_{args.seed}')
     distributed_init(args)
     configure_torch_runtime()
@@ -438,17 +539,25 @@ if __name__ == "__main__":
         train_dataset.dropout_data(args.data_dropout)
         val_dataset.dropout_data(args.data_dropout)
         test_dataset.dropout_data(args.data_dropout)
+    if args.odp_model == 'late-shuffled' or args.forecast_mode == 'shuffled':
+        train_dataset = DeterministicShuffledHistoryDataset(
+            train_dataset, 'train', args.seed, train=True)
+        val_dataset = DeterministicShuffledHistoryDataset(
+            val_dataset, 'validation', args.seed, train=False)
+        if not args.skip_test:
+            test_dataset = DeterministicShuffledHistoryDataset(
+                test_dataset, 'test', args.seed, train=False)
     log(logger, 'Dataset Loaded.')
     dataloader_kwargs = build_dataloader_kwargs(args)
     log(logger, f'DataLoader kwargs: {dataloader_kwargs}')
     if args.distributed:
         train_sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, shuffle=True, drop_last=True)
         val_sampler = SequentialSampler(val_dataset)
-        test_sampler = SequentialSampler(test_dataset)
+        test_sampler = None if args.skip_test else SequentialSampler(test_dataset)
     else:
         train_sampler = RandomSampler(train_dataset)
         val_sampler = SequentialSampler(val_dataset)
-        test_sampler = SequentialSampler(test_dataset)
+        test_sampler = None if args.skip_test else SequentialSampler(test_dataset)
     train_dataloader = DataLoader(
         train_dataset, batch_size=args.batch_size, sampler=train_sampler,
         collate_fn=collate_fn, **dataloader_kwargs
@@ -457,10 +566,12 @@ if __name__ == "__main__":
         val_dataset, batch_size=args.batch_size, sampler=val_sampler,
         collate_fn=collate_fn, **dataloader_kwargs
     )
-    test_dataloader = DataLoader(
-        test_dataset, batch_size=args.batch_size, sampler=test_sampler,
-        collate_fn=collate_fn, **dataloader_kwargs
-    )
+    test_dataloader = None
+    if not args.skip_test:
+        test_dataloader = DataLoader(
+            test_dataset, batch_size=args.batch_size, sampler=test_sampler,
+            collate_fn=collate_fn, **dataloader_kwargs
+        )
     
     var_order_idx, inv_order_idx = get_variable_order(
         args.dataset.split('_')[0] if args.dataset.startswith('mimic') else args.dataset
@@ -530,6 +641,31 @@ if __name__ == "__main__":
         save_metric = 'auprc'
     
     pretrain_dir = args.pretrain_dir if args.pretrain_dir else args.save_dir
+    if args.validation_only:
+        checkpoint_path = os.path.join(args.save_dir, 'checkpoint-prc.pth')
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f'Finetune checkpoint not found: {checkpoint_path}')
+        checkpoint = torch.load(checkpoint_path, weights_only=False)
+        _load_model_state_dict(encoder, checkpoint['encoder'])
+        _load_model_state_dict(classifier, checkpoint['classifier'])
+        encoder.eval()
+        classifier.eval()
+        val_labels, val_preds, _ = _collect_predictions(args, val_dataloader)
+        validation_metrics = print_metrics(val_labels, val_preds, args.local_rank == 0)
+        if args.local_rank == 0:
+            with open(os.path.join(args.save_dir, 'validation_eval_results.json'), 'w', encoding='utf-8') as handle:
+                json.dump({
+                    'checkpoint': 'checkpoint-prc.pth',
+                    'checkpoint_epoch': int(checkpoint['epoch']),
+                    'validation_metrics': {
+                        key: float(value) for key, value in validation_metrics.items()
+                        if not hasattr(value, '__len__')
+                    },
+                }, handle, indent=2)
+        log(logger, 'Validation-only evaluation complete; held-out test was not loaded or evaluated.')
+        if args.distributed:
+            dist.barrier()
+        raise SystemExit(0)
     if args.eval_only:
         checkpoint_path = os.path.join(args.save_dir, 'checkpoint-prc.pth')
         if not os.path.exists(checkpoint_path):
@@ -562,8 +698,11 @@ if __name__ == "__main__":
         val_loss = 0
         encoder.train()
         classifier.train()
+        set_clinical_backbone_trainable(encoder, i > args.freeze_epochs)
         if args.distributed and isinstance(train_sampler, DistributedSampler):
             train_sampler.set_epoch(i - 1)
+        if hasattr(train_dataset, 'set_epoch'):
+            train_dataset.set_epoch(i - 1)
         # Current MNAR dropout: linear decay if progressive schedule, else constant
         if _mnar_progressive:
             current_mnar_drop = _mnar_initial * max(0.0, 1.0 - (i - 1) / args.epochs)
@@ -576,16 +715,21 @@ if __name__ == "__main__":
             policy_mask_clean = None
             if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                     or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                    or args.use_smile_lean_v2):
+                    or args.use_smile_lean_v2 or args.odp_model != 'none'):
                 policy_mask_clean = batch['mask'].clone()
                 batch['mask'] = apply_mnar_dropout(batch['mask'], current_mnar_drop)
-            if i <= args.freeze_epochs:
-                with torch.no_grad():
-                    h = encoder(**batch, original_mask=policy_mask_clean)
+            policy_output = None
+            if args.odp_model in ('late', 'late-shuffled'):
+                h, policy_output = encoder(
+                    **batch, original_mask=policy_mask_clean, return_policy=True)
             else:
                 h = encoder(**batch, original_mask=policy_mask_clean)
             preds = classifier(h, original_mask=policy_mask_clean, **batch)
-            loss = criterion(preds, batch['labels'])
+            task_loss = criterion(preds, batch['labels'])
+            policy_loss = (causal_policy_bce(
+                policy_output['logits'], policy_mask_clean, batch['lens'])
+                if policy_output is not None else task_loss.new_zeros(()))
+            loss = task_loss + args.lambda_policy * policy_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -596,6 +740,7 @@ if __name__ == "__main__":
         classifier.eval()
         preds_all = []
         labels_all = []
+        sample_ids_all = []
         with torch.no_grad():
             for batch in val_dataloader:
                 for key in batch:
@@ -603,14 +748,26 @@ if __name__ == "__main__":
                 policy_mask_clean = None
                 if (args.use_mnar or args.use_smile or args.use_smile_film or args.use_smile_v2
                         or args.use_smile_v2_film or args.use_smile_lean or args.use_smile_lean_samepretrain
-                        or args.use_smile_lean_v2):
+                        or args.use_smile_lean_v2 or args.odp_model != 'none'):
                     policy_mask_clean = batch['mask'].clone()  # no dropout: val uses clean mask
-                h = encoder(**batch, original_mask=policy_mask_clean)
+                policy_output = None
+                if args.odp_model in ('late', 'late-shuffled'):
+                    h, policy_output = encoder(
+                        **batch, original_mask=policy_mask_clean, return_policy=True)
+                else:
+                    h = encoder(**batch, original_mask=policy_mask_clean)
                 preds = classifier(h, original_mask=policy_mask_clean, **batch)
-                val_loss += criterion(preds, batch['labels']).item() * batch['x'].shape[0]
+                task_loss = criterion(preds, batch['labels'])
+                policy_loss = (causal_policy_bce(
+                    policy_output['logits'], policy_mask_clean, batch['lens'])
+                    if policy_output is not None else task_loss.new_zeros(()))
+                val_loss += (task_loss + args.lambda_policy * policy_loss).item() * batch['x'].shape[0]
                 preds_all.append(preds.cpu())
                 labels_all.append(batch['labels'].cpu())
-        metrics = print_metrics(torch.cat(labels_all), torch.cat(preds_all), args.local_rank == 0)
+                sample_ids_all.append(batch['sample_id'].cpu())
+        labels_global, preds_global = _gather_task_records(
+            torch.cat(labels_all), torch.cat(preds_all), torch.cat(sample_ids_all))
+        metrics = print_metrics(labels_global, preds_global, args.local_rank == 0)
         t_loss = train_loss / len(train_dataset) * args.world_size
         v_loss = val_loss / len(val_dataset)
         scheduler.step()
@@ -639,4 +796,22 @@ if __name__ == "__main__":
 
     if args.distributed:
         dist.barrier()
-    test(args, 'checkpoint-prc.pth', test_dataloader, val_dataloader)
+    if args.odp_model in ('late', 'late-shuffled'):
+        selected = torch.load(os.path.join(args.save_dir, 'checkpoint-prc.pth'), weights_only=False)
+        _load_model_state_dict(encoder, selected['encoder'])
+        encoder.eval()
+        records = _collect_policy_records(val_dataloader)
+        retention = {
+            'checkpoint': 'checkpoint-prc.pth',
+            'checkpoint_epoch': int(selected['epoch']),
+            'selection_metric': 'validation_task_auprc',
+            'primary': forecasting_metrics(records, include_t0=False),
+            'secondary': forecasting_metrics(records, include_t0=True),
+        }
+        if args.local_rank == 0:
+            with open(os.path.join(args.save_dir, 'forecasting_retention_validation.json'), 'w', encoding='utf-8') as handle:
+                json.dump(retention, handle, indent=2)
+    if args.skip_test:
+        log(logger, 'Held-out test skipped by --skip-test; no test loader or test metrics were created.')
+    else:
+        test(args, 'checkpoint-prc.pth', test_dataloader, val_dataloader)

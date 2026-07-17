@@ -334,6 +334,14 @@ if __name__ == "__main__":
         model_name = 'smart-smile-lean'
         if _abl_suffix:
             model_name = 'smart-smile-lean-' + _abl_suffix
+        elif args.smile_no_curriculum:
+            # Clean w/o-curriculum control: matches main_pretrain naming so the
+            # finetune stage loads from and saves to the norandom checkpoint dir.
+            model_name = 'smart-smile-lean-norandom'
+        elif getattr(args, 'obs_density_window', 5) != 5:
+            # Density-window sweep: mirror main_pretrain naming so finetune loads
+            # from and saves to the matching smart-smile-lean-dw{N} checkpoint dir.
+            model_name = f'smart-smile-lean-dw{args.obs_density_window}'
     elif args.use_mnar:
         from models.smart import MNAREncoder as Encoder
         model_name = 'smart-mnar'

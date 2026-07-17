@@ -508,6 +508,15 @@ if __name__ == "__main__":
         model_name = 'smart-smile-lean'
         if _abl_suffix:
             model_name = 'smart-smile-lean-' + _abl_suffix
+        elif args.smile_no_curriculum:
+            # Clean w/o-curriculum control: full SMILE-Lean encoder (MNAR structural
+            # signal preserved) with random pretrain masking instead of the curriculum.
+            model_name = 'smart-smile-lean-norandom'
+        elif getattr(args, 'obs_density_window', 5) != 5:
+            # Density-window sweep: each non-default window is a distinct encoder
+            # (different local receptive field) and MUST get its own checkpoint dir,
+            # otherwise it collides with (and overwrites) plain smart-smile-lean.
+            model_name = f'smart-smile-lean-dw{args.obs_density_window}'
     elif args.use_smile_v2_film:
         from models.smart import SMILEv2FiLMEncoder as Encoder
         model_name = 'smart-smile-v2-film'

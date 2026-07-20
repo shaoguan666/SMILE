@@ -18,7 +18,6 @@ DEFAULT_CONFIG = HERE / "configs" / "bibm_smile_experiments.json"
 VARIANT_FLAGS = {
     "smart": [],
     "smart-smile-lean": ["--use-smile-lean"],
-    "smart-smile-lean-v2": ["--use-smile-lean-v2"],
     "smart-smile-lean-no-density": ["--use-smile-lean", "--abl-no-density"],
     "smart-smile-lean-no-mnar-bias": ["--use-smile-lean", "--abl-no-mnar-bias"],
     "smart-smile-lean-no-film": ["--use-smile-lean", "--abl-no-film"],
@@ -28,9 +27,6 @@ VARIANT_FLAGS = {
         "--use-smile-lean", "--abl-no-mnar-bias", "--abl-no-time-mnar"
     ],
     "smart-smile-lean-samepretrain": ["--use-smile-lean-samepretrain"],
-    "smart-smile-lean-v2-no-dynamic-mnar": [
-        "--use-smile-lean-v2", "--abl-no-dynamic-mnar"
-    ],
 }
 
 

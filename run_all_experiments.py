@@ -30,7 +30,7 @@ import argparse
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 
 SMART_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MASK_GROUP_CONFIG = os.path.join(
@@ -61,20 +61,6 @@ CONTROL_MODELS = [
     'smart-smile-lean-random-bias',
     'smart-smile-lean-global-comiss',
 ]
-ODP_MODELS = {
-    'smart-smile-lean-nocomiss-base': 'nocomiss-base',
-    'smart-smile-lean-nocomiss-density': 'nocomiss-density',
-    'smart-smile-lean-odp-late': 'late',
-    'smart-smile-lean-odp-late-shuffled': 'late-shuffled',
-    'smart-smile-lean-nocomiss-pmatch': 'nocomiss-pmatch',
-}
-FORECAST_MODELS = {
-    'odp-forecast-prior': 'prior',
-    'odp-forecast-time': 'time',
-    'odp-forecast-own': 'own',
-    'odp-forecast-full': 'full',
-    'odp-forecast-shuffled': 'shuffled',
-}
 # Parameter-matched backbone control: plain SMART backbone widened to strictly
 # exceed the SMILE-Lean parameter count (d_model 40 vs 32), same training budget
 # as the SMART baseline. Isolates capacity from the structured-missingness modules.
@@ -105,7 +91,6 @@ ALL_SEEDS = [1, 42, 3407]
 _LEAN_MODELS = {'smart-smile-lean'}
 # Ablation models also use lean settings
 _LEAN_V1_ABLATION_MODELS = set(ABLATION_MODELS) | set(CONTROL_MODELS)
-_LEAN_V2_ABLATION_MODELS = set()
 _LEAN_ABLATION_MODELS = set(ABLATION_MODELS) | set(CONTROL_MODELS)
 _LEAN_MODELS.update(_LEAN_ABLATION_MODELS)
 # Density-window sweep variants share all SMILE-Lean training settings.
@@ -113,8 +98,6 @@ _LEAN_MODELS.update(DENSITY_WINDOW_SWEEP)
 # The w/o-curriculum control shares all SMILE-Lean training settings (batch 64,
 # finetune 25 epochs); only the pretrain masking schedule differs.
 _LEAN_MODELS.update(NOCURRICULUM_MODELS)
-_LEAN_MODELS.update(ODP_MODELS)
-_LEAN_MODELS.update(FORECAST_MODELS)
 
 # Map ablation model name -> list of --abl-* CLI flags
 _ABLATION_FLAGS = {
@@ -139,27 +122,7 @@ def mask_group_config_path(mask_group_config):
 
 
 def models_require_mask_group_config(models):
-    return [model for model in models if model in _LEAN_MODELS and model != 'odp-forecast-prior']
-
-
-def odp_model_flags(model_name):
-    if model_name in ODP_MODELS:
-        return ['--odp-model', ODP_MODELS[model_name], '--model-id', model_name]
-    if model_name in FORECAST_MODELS:
-        mode = FORECAST_MODELS[model_name]
-        flags = ['--forecast-mode', mode, '--model-id', model_name]
-        if mode != 'prior':
-            flags = ['--odp-model', 'late'] + flags
-        return flags
-    return []
-
-
-def fresh_odp_export_root():
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    short_sha = subprocess.check_output(
-        ['git', 'rev-parse', '--short', 'HEAD'], cwd=SMART_DIR, text=True
-    ).strip()
-    return os.path.join('exports', f'odp_late_fusion_{stamp}_{short_sha}')
+    return [model for model in models if model in _LEAN_MODELS]
 
 
 def pretrain_ckpt(export_root, dataset, model_name, seed):
@@ -174,13 +137,6 @@ def finetune_ckpt(export_root, dataset, model_name, seed):
     )
 
 
-def pretrain_source_model(model_name):
-    """Return the model name whose pretrain checkpoint should be reused."""
-    if model_name == 'smart-smile-lean-v2-no-dual-head':
-        return 'smart-smile-lean-v2'
-    return model_name
-
-
 def launch_prefix(args, run_idx):
     """Build the process launcher prefix for a worker script."""
     if not args.use_torchrun:
@@ -188,8 +144,8 @@ def launch_prefix(args, run_idx):
     master_port = args.master_port_base + (run_idx - 1)
     return [
         args.python_executable, '-m', 'torch.distributed.run',
+        '--standalone',
         '--nnodes=1',
-        '--master_addr', '127.0.0.1',
         '--nproc_per_node', str(args.nproc_per_node),
         '--master_port', str(master_port),
     ]
@@ -209,10 +165,6 @@ def build_launch_env(args):
         }
         for key, value in safe_env.items():
             env.setdefault(key, value)
-    world_size = args.nproc_per_node if args.use_torchrun else 1
-    env['SMART_PER_RANK_BATCH'] = str(args.batch_size // world_size)
-    env['SMART_WORLD_SIZE'] = str(world_size)
-    env['SMART_EFFECTIVE_GLOBAL_BATCH'] = str(args.batch_size)
     return env
 
 
@@ -223,11 +175,6 @@ def run_cmd(cmd, tag, dry_run, env=None):
     print(f'CMD: {" ".join(cmd)}')
     if env is not None and env.get('CUDA_VISIBLE_DEVICES'):
         print(f'CUDA_VISIBLE_DEVICES={env["CUDA_VISIBLE_DEVICES"]}')
-    if env is not None and env.get('SMART_PER_RANK_BATCH'):
-        print('BATCH:',
-              f'per-rank={env["SMART_PER_RANK_BATCH"]}',
-              f'world-size={env["SMART_WORLD_SIZE"]}',
-              f'effective-global={env["SMART_EFFECTIVE_GLOBAL_BATCH"]}')
     if env is not None:
         env_keys = [
             'SMART_SAFE_NCCL',
@@ -269,12 +216,12 @@ def main():
     parser.add_argument('--models', nargs='+', default=ALL_MODELS,
                         choices=ALL_MODELS + ABLATION_MODELS + CONTROL_MODELS
                                 + list(PMATCH_MODELS) + list(DENSITY_WINDOW_SWEEP)
-                                + NOCURRICULUM_MODELS + list(ODP_MODELS) + list(FORECAST_MODELS),
+                                + NOCURRICULUM_MODELS,
                         metavar='MODEL',
                         help='Models to run. Available: ' + ', '.join(
                             ALL_MODELS + ABLATION_MODELS + CONTROL_MODELS
                             + list(PMATCH_MODELS) + list(DENSITY_WINDOW_SWEEP)
-                            + NOCURRICULUM_MODELS + list(ODP_MODELS) + list(FORECAST_MODELS)))
+                            + NOCURRICULUM_MODELS))
     parser.add_argument('--datasets', nargs='+', default=ALL_DATASETS,
                         choices=ALL_DATASETS, metavar='DATASET')
     parser.add_argument('--seeds', nargs='+', type=int, default=ALL_SEEDS,
@@ -282,9 +229,9 @@ def main():
     parser.add_argument('--pretrain-epochs', type=int, default=25)
     parser.add_argument('--finetune-epochs', type=int, default=35)
     parser.add_argument('--batch-size', type=int, default=64,
-                        help='Effective global batch size. With two torchrun ranks, 64 means 32 per rank.')
-    parser.add_argument('--export-root', type=str, default=None,
-                        help='Root for checkpoints/logs. ODP runs default to a fresh UTC/SHA directory.')
+                        help='Batch size per GPU. Default is 64.')
+    parser.add_argument('--export-root', type=str, default='./export',
+                        help='Root directory for checkpoints and logs generated by both stages.')
     parser.add_argument('--mask-group-config', type=str, default=DEFAULT_MASK_GROUP_CONFIG,
                         help='Audited selected-mask-groups JSON forwarded to pretraining. '
                              f'Default: {DEFAULT_MASK_GROUP_CONFIG}')
@@ -305,31 +252,14 @@ def main():
                         help='Only run finetuning (pretrain checkpoint must exist)')
     parser.add_argument('--eval-only', action='store_true',
                         help='Only evaluate existing checkpoint-prc.pth files')
-    parser.add_argument('--validation-only', action='store_true',
-                        help='Evaluate existing checkpoints on validation only; never touch test.')
-    parser.add_argument('--smoke-test', action='store_true',
-                        help='Run one pretraining and one finetuning epoch for wiring diagnostics.')
-    parser.add_argument('--skip-test', action='store_true',
-                        help='Forward validation-only mode. Automatically enabled for ODP training.')
     parser.add_argument('--force', action='store_true',
                         help='Re-run even if checkpoint already exists')
     args = parser.parse_args()
-    exclusive_modes = [args.pretrain_only, args.finetune_only, args.eval_only, args.validation_only]
+    exclusive_modes = [args.pretrain_only, args.finetune_only, args.eval_only]
     if sum(exclusive_modes) > 1:
-        parser.error('--pretrain-only, --finetune-only, --eval-only, and --validation-only are mutually exclusive')
-    has_odp = any(model in ODP_MODELS or model in FORECAST_MODELS for model in args.models)
-    if (args.eval_only or args.validation_only) and any(model in FORECAST_MODELS for model in args.models):
-        parser.error('checkpoint evaluation is a downstream operation and cannot target forecasting-only modes')
-    if has_odp and not args.eval_only:
-        args.skip_test = True
-    if args.export_root is None:
-        args.export_root = fresh_odp_export_root() if has_odp else './export'
-    world_size = args.nproc_per_node if args.use_torchrun else 1
-    if args.batch_size % world_size:
-        parser.error('--batch-size (global) must be divisible by the process count')
-    per_rank_batch = args.batch_size // world_size
+        parser.error('--pretrain-only, --finetune-only, and --eval-only are mutually exclusive')
     structured_models = models_require_mask_group_config(args.models)
-    if structured_models and not (args.finetune_only or args.eval_only or args.validation_only):
+    if structured_models and not (args.finetune_only or args.eval_only):
         if not args.mask_group_config:
             parser.error(
                 '--mask-group-config is required for structured masking models: '
@@ -355,7 +285,6 @@ def main():
     print(f'Seeds:    {args.seeds}')
     print(f'Pretrain epochs: {args.pretrain_epochs}  |  Finetune epochs: {args.finetune_epochs}')
     print(f'Export root: {args.export_root}  |  Split seed: {args.split_seed}')
-    print(f'Batch: per-rank={per_rank_batch} world-size={world_size} effective-global={args.batch_size}')
     if args.mask_group_config:
         print(f'Mask group config: {args.mask_group_config}')
     print(f'Worker python: {args.python_executable}')
@@ -374,17 +303,12 @@ def main():
         _is_v2_ablation = model.startswith('smart-smile-v2-') and not _is_v2_film_ablation and model in _ABLATION_FLAGS
         use_smile_v2_film_flag = ['--use-smile-v2-film'] if model == 'smart-smile-v2-film' or _is_v2_film_ablation else []
         use_smile_v2_flag      = ['--use-smile-v2']      if model == 'smart-smile-v2' or _is_v2_ablation else []
-        _is_lean_v2_ablation = model in _LEAN_V2_ABLATION_MODELS
-        use_smile_lean_v2_flag = ['--use-smile-lean-v2'] if model == 'smart-smile-lean-v2' or _is_lean_v2_ablation else []
         _is_lean_v1_ablation = model in _LEAN_V1_ABLATION_MODELS
         _is_density_window_sweep = model in DENSITY_WINDOW_SWEEP
         _is_nocurriculum = model in NOCURRICULUM_MODELS
         use_smile_lean_flag              = ['--use-smile-lean']             if model in ('smart-smile-lean', 'smart-smile-lean-pmae') or _is_lean_v1_ablation or _is_density_window_sweep or _is_nocurriculum else []
         # Clean w/o-curriculum control: full SMILE-Lean run with random pretrain masking.
         smile_no_curriculum_flag = ['--smile-no-curriculum'] if _is_nocurriculum else []
-        odp_flags = odp_model_flags(model)
-        odp_pretrain_flags = odp_flags + ['--policy-loss-weight', '0.1'] if odp_flags else []
-        odp_finetune_flags = odp_flags + ['--lambda-policy', '0.1'] if odp_flags else []
         # Non-default density-window forwarded to pretrain, finetune, and eval so
         # the encoder is rebuilt with a matching receptive field at every stage.
         density_window_flag = (['--obs-density-window', str(DENSITY_WINDOW_SWEEP[model])]
@@ -396,19 +320,16 @@ def main():
                        if _is_pmatch else [])
         use_smile_lean_samepretrain_flag = ['--use-smile-lean-samepretrain'] if model == 'smart-smile-lean-samepretrain' else []
         pmae_pretrain_flag               = ['--pretrain-mask-mode', 'proportional_var'] if model == 'smart-smile-lean-pmae' else []
-        pretrain_model = pretrain_source_model(model)
+        pretrain_model = model
         pretrain_dir_flag = [
             '--pretrain-dir',
             os.path.join(args.export_root, dataset, pretrain_model, f'seed_{seed}'),
         ]
         _lean_exclude = {'smart-smile-film', 'smart-smile-v2', 'smart-smile-v2-film',
-                         'smart-smile-lean-v2',
                          'smart-smile-lean', 'smart-smile-lean-samepretrain', 'smart-smile-lean-pmae'}
         _lean_exclude.update(_ABLATION_FLAGS.keys())
         _lean_exclude.update(DENSITY_WINDOW_SWEEP)
         _lean_exclude.update(NOCURRICULUM_MODELS)
-        _lean_exclude.update(ODP_MODELS)
-        _lean_exclude.update(FORECAST_MODELS)
         use_smile_flag         = ['--use-smile']         if (model.startswith('smart-smile')
                                                              and model not in _lean_exclude) else []
         use_mnar_flag          = ['--use-mnar']          if model == 'smart-mnar'          else []
@@ -431,16 +352,14 @@ def main():
 
         # ---- Pretrain ----
         # Lean models: batch_size=64, save_best (same setup as smart baseline)
-        cur_batch_size = per_rank_batch
-        cur_ft_epochs = 1 if args.smoke_test else (25 if model in _LEAN_MODELS else args.finetune_epochs)
-        cur_pretrain_epochs = 1 if args.smoke_test else args.pretrain_epochs
-        if args.eval_only or args.validation_only:
+        cur_batch_size = 64 if model in _LEAN_MODELS else args.batch_size
+        cur_ft_epochs = 25 if model in _LEAN_MODELS else args.finetune_epochs
+        if args.eval_only:
             ft_ckpt = finetune_ckpt(args.export_root, dataset, model, seed)
             if not args.dry_run and not os.path.exists(ft_ckpt):
                 print(f'[WARN] finetune checkpoint missing for {model}/{dataset}/seed_{seed}, skipping evaluation')
                 failed.append(f'{tag_prefix} evaluation (no finetune ckpt)')
                 continue
-            evaluation_flag = '--validation-only' if args.validation_only else '--eval-only'
             cmd = launch_prefix(args, idx) + [
                 'main_finetune.py',
                 '--dataset', dataset,
@@ -448,10 +367,8 @@ def main():
                 '--batch_size', str(cur_batch_size),
                 '--save_dir', args.export_root,
                 '--split-seed', str(args.split_seed),
-                evaluation_flag,
-            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + odp_finetune_flags + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + arch_abl_extra + density_window_flag + pmatch_flag + smile_no_curriculum_flag
-            if args.validation_only:
-                cmd.append('--skip-test')
+                '--eval-only',
+            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + arch_abl_extra + density_window_flag + pmatch_flag + smile_no_curriculum_flag
             ok = run_cmd(cmd, f'{tag_prefix} | EVALUATE', args.dry_run, env=launch_env)
             if not ok:
                 failed.append(f'{tag_prefix} evaluation')
@@ -459,10 +376,7 @@ def main():
 
         if not args.finetune_only:
             pre_ckpt = pretrain_ckpt(args.export_root, dataset, pretrain_model, seed)
-            if model == 'smart-smile-lean-v2-no-dual-head':
-                print(f'{tag_prefix} | pretrain: REUSE ({pretrain_model})')
-                skipped_pre += 1
-            elif not args.force and os.path.exists(pre_ckpt):
+            if not args.force and os.path.exists(pre_ckpt):
                 print(f'{tag_prefix} | pretrain: SKIP (exists)')
                 skipped_pre += 1
             else:
@@ -475,13 +389,11 @@ def main():
                     'main_pretrain.py',
                     '--dataset', dataset,
                     '--seed', str(seed),
-                    '--epochs', str(cur_pretrain_epochs),
+                    '--epochs', str(args.pretrain_epochs),
                     '--batch_size', str(cur_batch_size),
                     '--save_dir', args.export_root,
                     '--split-seed', str(args.split_seed),
-                ] + save_last_flag + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + odp_pretrain_flags + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pmae_pretrain_flag + arch_abl_extra + density_window_flag + pmatch_flag + smile_no_curriculum_flag
-                if args.skip_test:
-                    cmd.append('--skip-test')
+                ] + save_last_flag + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pmae_pretrain_flag + arch_abl_extra + density_window_flag + pmatch_flag + smile_no_curriculum_flag
                 if args.mask_group_config:
                     cmd.extend(['--mask-group-config', args.mask_group_config])
                 ok = run_cmd(cmd, f'{tag_prefix} | PRETRAIN', args.dry_run, env=launch_env)
@@ -491,9 +403,6 @@ def main():
                     continue
 
         # ---- Finetune ----
-        if model in FORECAST_MODELS:
-            print(f'{tag_prefix} | finetune: NOT APPLICABLE (forecasting audit only)')
-            continue
         if not args.pretrain_only:
             ft_ckpt = finetune_ckpt(args.export_root, dataset, model, seed)
             if not args.force and os.path.exists(ft_ckpt):
@@ -513,9 +422,7 @@ def main():
                 '--batch_size', str(cur_batch_size),
                 '--save_dir', args.export_root,
                 '--split-seed', str(args.split_seed),
-            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_v2_flag + use_smile_lean_flag + odp_finetune_flags + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pretrain_dir_flag + arch_abl_extra + density_window_flag + pmatch_flag + smile_no_curriculum_flag
-            if args.skip_test:
-                cmd.append('--skip-test')
+            ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + pretrain_dir_flag + arch_abl_extra + density_window_flag + pmatch_flag + smile_no_curriculum_flag
             ok = run_cmd(cmd, f'{tag_prefix} | FINETUNE', args.dry_run, env=launch_env)
             if not ok:
                 failed.append(f'{tag_prefix} finetune')

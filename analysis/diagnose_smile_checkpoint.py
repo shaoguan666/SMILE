@@ -37,13 +37,11 @@ from data.mimiciii import (  # noqa: E402
 )
 from models.smart import (  # noqa: E402
     Classifier,
-    DualHeadClassifier,
     Encoder,
     MNAREncoder,
     SMILEEncoder,
     SMILEFiLMEncoder,
     SMILELeanEncoder,
-    SMILELeanV2Encoder,
     SMILEv2Encoder,
     SMILEv2FiLMEncoder,
     TimeFiLMEncoder,
@@ -70,7 +68,6 @@ ENCODER_CLASSES = {
     "smart-smile-v2-film": SMILEv2FiLMEncoder,
     "smart-smile-lean": SMILELeanEncoder,
     "smart-smile-lean-samepretrain": SMILELeanEncoder,
-    "smart-smile-lean-v2": SMILELeanV2Encoder,
 }
 
 ABLATION_FLAGS = {
@@ -81,9 +78,6 @@ ABLATION_FLAGS = {
     "abl_no_time_pe": "no-time-pe",
     "abl_no_cross_attn": "no-cross-attn",
     "abl_no_mnar_cls": "no-mnar-cls",
-    "abl_no_policy": "no-policy",
-    "abl_no_dynamic_mnar": "no-dynamic-mnar",
-    "abl_no_dual_head": "no-dual-head",
 }
 
 
@@ -254,7 +248,6 @@ def infer_model_args(
         time_dim=spec["time_dim"],
         dropout=overrides.dropout,
         obs_density_window=overrides.obs_density_window,
-        v2_use_time_pe=False,
         los_task=overrides.los_task,
         los_label_unit=overrides.los_label_unit,
     )
@@ -277,18 +270,6 @@ def build_encoder(args: SimpleNamespace, variant: str) -> torch.nn.Module:
     return cls(args)
 
 
-def classifier_uses_dual_head(
-    variant: str,
-    args: SimpleNamespace,
-    classifier_state: dict[str, torch.Tensor] | None,
-) -> bool:
-    if classifier_state is not None:
-        return any(key.startswith("mask_proj.") or key.startswith("cls_mlp.") for key in classifier_state)
-    if "lean-v2" in variant and not getattr(args, "abl_no_dual_head", False):
-        return True
-    return False
-
-
 def build_classifier(
     args: SimpleNamespace,
     variant: str,
@@ -296,8 +277,6 @@ def build_classifier(
 ) -> torch.nn.Module | None:
     if classifier_state is None:
         return None
-    if classifier_uses_dual_head(variant, args, classifier_state):
-        return DualHeadClassifier(args)
     return Classifier(args)
 
 

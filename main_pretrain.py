@@ -398,7 +398,8 @@ if __name__ == "__main__":
     parser.add_argument('--mask-group-config', type=str, default=None,
                         help='Audited selected-mask-groups JSON required by structured/system masking.')
     parser.add_argument('--split-seed', type=int, default=42,
-                        help='Fixed patient split seed associated with the mask-group audit.')
+                        help='Patient split seed associated with the mask-group audit. '
+                             'For SMART-baseline C12/C19 runs, set this equal to --seed.')
     parser.add_argument('--local-rank', type=int, default=0)
     parser.add_argument('--min_mask_ratio', type=float, default=0.15)
     parser.add_argument('--max_mask_ratio', type=float, default=0.75)
@@ -442,7 +443,7 @@ if __name__ == "__main__":
     parser.add_argument('--abl-no-time-mnar', action='store_true', default=False,
                         help='Ablation: disable time-dynamic MNAR scaling only')
     parser.add_argument('--abl-no-time-pe', action='store_true', default=False,
-                        help='Ablation: disable physical-time positional encoding')
+                        help='Ablation: disable additive learnable timestamp encoding')
     parser.add_argument('--abl-no-cross-attn', action='store_true', default=False,
                         help='Ablation: disable per-block MNAR cross-attention fusion')
     parser.add_argument('--abl-no-mnar-cls', action='store_true', default=False,
@@ -469,8 +470,6 @@ if __name__ == "__main__":
                         help='Custom fixed masking mix (system temporal random), must sum to 1. '
                              'Overrides dataset-adaptive defaults when --smile-stratified is set.')
     args = parser.parse_args()
-    if args.dataset in ('c12', 'c19') and args.split_seed != 42:
-        raise ValueError(f'{args.dataset} loaders currently expose only the fixed split seed 42.')
     # Build ablation suffix for architecture variants
     _abl_flags = {
         'no-density': args.abl_no_density,
@@ -573,13 +572,15 @@ if __name__ == "__main__":
         args.demo_dim = 4
         args.num_class = 2
         args.max_len = 48
-        train_dataset, val_dataset, test_dataset = load_challenge_2012()
+        train_dataset, val_dataset, test_dataset = load_challenge_2012(
+            split_seed=args.split_seed)
     elif args.dataset == 'c19':
         args.input_dim = 34
         args.demo_dim = 5
         args.num_class = 2
         args.max_len = 60
-        train_dataset, val_dataset, test_dataset = load_challenge_2019()
+        train_dataset, val_dataset, test_dataset = load_challenge_2019(
+            split_seed=args.split_seed)
     elif args.dataset == 'mimic_mortality':
         args.input_dim = 17
         args.demo_dim = 0
@@ -615,7 +616,8 @@ if __name__ == "__main__":
         train_dataset.dropout_data(args.data_dropout)
         val_dataset.dropout_data(args.data_dropout)
         test_dataset.dropout_data(args.data_dropout)
-    log(logger, 'Dataset Loaded.')
+    log(logger, f'Dataset Loaded. split_seed={args.split_seed} '
+                f'protocol={getattr(train_dataset, "protocol", "task_default")}')
     system_groups, mask_group_metadata = get_mask_system_groups(args)
     if mask_group_metadata is not None:
         log(logger, '[Mask Groups] registry_version={registry_version} '

@@ -3,6 +3,7 @@ from collections import OrderedDict
 import json
 import os
 import logging
+from pathlib import Path
 import torch
 import torch.distributed as dist
 import numpy as np
@@ -189,7 +190,9 @@ def test(args, checkpoint_path, test_dataloader, val_dataloader=None):
         log(logger, "minPSE at validation-selected threshold = {:.4f}".format(
             minpse_metrics["minpse"]))
     if args.local_rank == 0:
-        result_path = os.path.join(args.save_dir, "eval_results.json")
+        result_dir = args.eval_output_dir or args.save_dir
+        os.makedirs(result_dir, exist_ok=True)
+        result_path = os.path.join(result_dir, "eval_results.json")
         with open(result_path, "w", encoding="utf-8") as f:
             json.dump({
                 "checkpoint": checkpoint_path,
@@ -228,8 +231,20 @@ if __name__ == "__main__":
                         help='Directory containing pretrained checkpoint-mse.pth. Defaults to save_dir.')
     parser.add_argument('--eval-only', action='store_true',
                         help='Evaluate save_dir/checkpoint-prc.pth without pretraining or finetuning.')
+    parser.add_argument('--eval-output-dir', type=str, default=None,
+                        help='Write evaluation artifacts outside the checkpoint directory.')
+    parser.add_argument('--limit-test', type=int, default=0,
+                        help='Evaluate only the first N test patients (smoke tests only).')
+    parser.add_argument('--sensor-manifest', type=Path, default=None)
+    parser.add_argument('--sensor-ks', nargs='+', type=int, default=[0, 2, 3, 5, 7, 8])
+    parser.add_argument('--sensor-replicates', nargs='+', type=int, default=[0, 1, 2, 3, 4])
+    parser.add_argument('--sensor-resume', action='store_true')
     parser.add_argument('--split-seed', type=int, default=42,
-                        help='Fixed patient split seed used consistently with pretraining.')
+                        help='Patient split seed used consistently with pretraining. '
+                             'For SMART-baseline C12/C19 runs, set this equal to --seed.')
+    parser.add_argument('--c19-use-class-weights', action='store_true', default=False,
+                        help='Optional C19 loss ablation. The SMART baseline protocol uses '
+                             'unweighted cross-entropy, which is the default.')
     parser.add_argument('--local-rank', type=int, default=0)
     parser.add_argument('--e_layers', type=int, default=2)
     parser.add_argument('--n_heads', type=int, default=4)
@@ -260,7 +275,7 @@ if __name__ == "__main__":
     parser.add_argument('--abl-no-time-mnar', action='store_true', default=False,
                         help='Ablation: disable time-dynamic MNAR scaling only')
     parser.add_argument('--abl-no-time-pe', action='store_true', default=False,
-                        help='Ablation: disable physical-time positional encoding')
+                        help='Ablation: disable additive learnable timestamp encoding')
     parser.add_argument('--abl-no-cross-attn', action='store_true', default=False,
                         help='Ablation: disable per-block MNAR cross-attention fusion')
     parser.add_argument('--abl-no-mnar-cls', action='store_true', default=False,
@@ -294,8 +309,6 @@ if __name__ == "__main__":
     parser.add_argument('--los-save-metric', choices=['auc_micro', 'auc_macro'], default='auc_micro',
                         help='Model selection metric for LoS classification.')
     args = parser.parse_args()
-    if args.dataset in ('c12', 'c19') and args.split_seed != 42:
-        raise ValueError(f'{args.dataset} loaders currently expose only the fixed split seed 42.')
     # Build ablation suffix for architecture variants
     _abl_flags = {
         'no-density': args.abl_no_density,
@@ -372,7 +385,7 @@ if __name__ == "__main__":
         init_logging(logger, args.save_dir if args.save_model else None)
     else:
         logger = None
-    log(logger, json.dumps(vars(args), indent=4))
+    log(logger, json.dumps(vars(args), indent=4, default=str))
     set_seed(args.seed)
 
     if args.dataset == 'c12':
@@ -380,13 +393,15 @@ if __name__ == "__main__":
         args.demo_dim = 4
         args.num_class = 2
         args.max_len = 48
-        train_dataset, val_dataset, test_dataset = load_challenge_2012()
+        train_dataset, val_dataset, test_dataset = load_challenge_2012(
+            split_seed=args.split_seed)
     elif args.dataset == 'c19':
         args.input_dim = 34
         args.demo_dim = 5
         args.num_class = 2
         args.max_len = 60
-        train_dataset, val_dataset, test_dataset = load_challenge_2019()
+        train_dataset, val_dataset, test_dataset = load_challenge_2019(
+            split_seed=args.split_seed)
     elif args.dataset == 'mimic_mortality':
         args.input_dim = 17
         args.demo_dim = 0
@@ -417,11 +432,17 @@ if __name__ == "__main__":
         )
     else:
         raise Exception("Dataset not exist!")
+    if args.limit_test:
+        if args.limit_test < 0:
+            raise ValueError('--limit-test must be non-negative')
+        from experiments.recent_baselines.baseline_utils import maybe_limit
+        test_dataset = maybe_limit(test_dataset, args.limit_test)
     if args.data_dropout > 0:
         train_dataset.dropout_data(args.data_dropout)
         val_dataset.dropout_data(args.data_dropout)
         test_dataset.dropout_data(args.data_dropout)
-    log(logger, 'Dataset Loaded.')
+    log(logger, f'Dataset Loaded. split_seed={args.split_seed} '
+                f'protocol={getattr(train_dataset, "protocol", "task_default")}')
     dataloader_kwargs = build_dataloader_kwargs(args)
     log(logger, f'DataLoader kwargs: {dataloader_kwargs}')
     if args.distributed:
@@ -495,13 +516,16 @@ if __name__ == "__main__":
             criterion = torch.nn.MSELoss()
             print_metrics = print_metrics_regression
             save_metric = 'mse'
-    elif args.dataset in ('mimic_decompensation', 'mimic_mortality'):
-        # 与原论文一致，不加权重，极端权重会导致 AUPRC 崩溃
+    elif (args.dataset in ('mimic_decompensation', 'mimic_mortality')
+          or (args.dataset == 'c19' and not args.c19_use_class_weights)):
+        # SMART's published C19 baseline uses ordinary cross-entropy. Keep
+        # inverse-frequency weighting available only as an explicit ablation.
         criterion = torch.nn.CrossEntropyLoss()
         print_metrics = print_metrics_binary
         save_metric = 'auprc'
     else:
-        # c12/c19：类别不平衡明显，加权有益
+        # C12 retains the existing weighted setup; C19 reaches this branch only
+        # when --c19-use-class-weights is explicitly requested.
         class_weights = compute_class_weights(train_dataset, num_classes=2).cuda()
         criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
         log(logger, f'Class weights: {class_weights.tolist()}')
@@ -513,7 +537,52 @@ if __name__ == "__main__":
         checkpoint_path = os.path.join(args.save_dir, 'checkpoint-prc.pth')
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f'Finetune checkpoint not found: {checkpoint_path}')
-        test(args, 'checkpoint-prc.pth', test_dataloader, val_dataloader)
+        if args.sensor_manifest is not None:
+            if args.eval_output_dir is None:
+                raise ValueError('--sensor-manifest requires --eval-output-dir')
+            checkpoint = torch.load(checkpoint_path, weights_only=False)
+            ignored = _load_model_state_dict(
+                encoder,
+                checkpoint['encoder'],
+                allow_unused_mnar_bias_mismatch=args.abl_no_mnar_bias,
+            )
+            if ignored:
+                log(logger, "Ignored disabled legacy CoMiss parameters: {}".format(
+                    ", ".join(ignored)))
+            _load_model_state_dict(classifier, checkpoint['classifier'])
+            encoder.eval()
+            classifier.eval()
+
+            from experiments.sensor_robustness import load_manifest, run_condition_grid
+
+            def evaluate_sensor_loader(loader):
+                labels, logits, _ = _collect_predictions(args, loader)
+                # Match the established binary-task evaluation protocol: the
+                # positive-class logit is the ranking score used for AUROC/AUPRC.
+                # Do not apply softmax here, because it can change rankings when
+                # the negative-class logit varies across examples.
+                scores = logits[:, 1]
+                return labels.numpy(), scores.numpy()
+
+            run_condition_grid(
+                evaluator=evaluate_sensor_loader,
+                test_dataset=test_dataset,
+                base_collate=collate_fn,
+                manifest=load_manifest(args.sensor_manifest),
+                ks=args.sensor_ks,
+                replicates=args.sensor_replicates,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers or 0,
+                output_root=Path(args.eval_output_dir),
+                model=model_name,
+                dataset_name=args.dataset,
+                train_seed=args.seed,
+                split_seed=args.split_seed,
+                checkpoint_path=Path(checkpoint_path),
+                resume=args.sensor_resume,
+            )
+        else:
+            test(args, 'checkpoint-prc.pth', test_dataloader, val_dataloader)
         if args.distributed:
             dist.barrier()
         raise SystemExit(0)

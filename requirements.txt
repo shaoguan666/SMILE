@@ -1,5 +1,8 @@
 torch
-numpy
+# The deployed PyTorch build was compiled against NumPy 1.x.  NumPy 2.x
+# prevents PyTorch from initializing its NumPy bridge and breaks DataLoader
+# collation of numpy.float32 values.
+numpy==1.26.4
 pandas
 scipy
 scikit-learn

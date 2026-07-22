@@ -36,6 +36,13 @@ figs/
 analysis/results/
 experiments/**/results/
 /export/audit/*.npz
+/export/
+/exports/
+/tmp/
+
+# Local transfer/checkpoint archives
+/*.zip
+/*.zip.sha256
 
 # Model artifacts and logs
 *.pth

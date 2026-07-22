@@ -5,7 +5,7 @@ Usage examples:
     # Inspect commands first
     python run_all_experiments.py --dry-run
 
-    # Run SMART, SMILE-Lean, and the three main ablations on C12/C19
+    # Run SMART and SMILE-Lean on C12/C19
     python run_all_experiments.py --datasets c12 c19
 
     # Run one ablation
@@ -54,6 +54,8 @@ ABLATION_MODELS = [
     'smart-smile-lean-no-density',
     'smart-smile-lean-no-mnar-bias',
     'smart-smile-lean-no-film',
+    'smart-smile-lean-no-time-mnar',
+    'smart-smile-lean-no-time-pe',
 ]
 # Co-missingness diagnostic controls (P0-B): isolate structure from generic bias
 # capacity and cohort priors. Both keep the bias pathway on SMILE-Lean.
@@ -104,6 +106,8 @@ _ABLATION_FLAGS = {
     'smart-smile-lean-no-density':                   ['--abl-no-density'],
     'smart-smile-lean-no-mnar-bias':                 ['--abl-no-mnar-bias'],
     'smart-smile-lean-no-film':                      ['--abl-no-film'],
+    'smart-smile-lean-no-time-mnar':                 ['--abl-no-time-mnar'],
+    'smart-smile-lean-no-time-pe':                   ['--abl-no-time-pe'],
     'smart-smile-lean-random-bias':                  ['--abl-random-bias'],
     'smart-smile-lean-global-comiss':                ['--abl-global-comiss'],
 }
@@ -252,12 +256,24 @@ def main():
                         help='Only run finetuning (pretrain checkpoint must exist)')
     parser.add_argument('--eval-only', action='store_true',
                         help='Only evaluate existing checkpoint-prc.pth files')
+    parser.add_argument('--eval-output-root', type=str, default=None,
+                        help='External root for eval artifacts; checkpoint directories remain read-only.')
+    parser.add_argument('--limit-test', type=int, default=0,
+                        help='Evaluate the first N test patients (smoke tests only).')
+    parser.add_argument('--sensor-manifest', type=str, default=None)
+    parser.add_argument('--sensor-ks', nargs='+', type=int, default=[0, 2, 3, 5, 7, 8])
+    parser.add_argument('--sensor-replicates', nargs='+', type=int, default=[0, 1, 2, 3, 4])
+    parser.add_argument('--sensor-resume', action='store_true')
     parser.add_argument('--force', action='store_true',
                         help='Re-run even if checkpoint already exists')
     args = parser.parse_args()
     exclusive_modes = [args.pretrain_only, args.finetune_only, args.eval_only]
     if sum(exclusive_modes) > 1:
         parser.error('--pretrain-only, --finetune-only, and --eval-only are mutually exclusive')
+    if args.sensor_manifest and not args.eval_only:
+        parser.error('--sensor-manifest requires --eval-only')
+    if args.sensor_manifest and not args.eval_output_root:
+        parser.error('--sensor-manifest requires --eval-output-root')
     structured_models = models_require_mask_group_config(args.models)
     if structured_models and not (args.finetune_only or args.eval_only):
         if not args.mask_group_config:
@@ -283,7 +299,8 @@ def main():
     print(f'Models:   {args.models}')
     print(f'Datasets: {args.datasets}')
     print(f'Seeds:    {args.seeds}')
-    print(f'Pretrain epochs: {args.pretrain_epochs}  |  Finetune epochs: {args.finetune_epochs}')
+    print(f'Pretrain epochs: {args.pretrain_epochs}  |  '
+          f'Finetune epochs: SMART/Lean=25, other={args.finetune_epochs}')
     print(f'Export root: {args.export_root}  |  Split seed: {args.split_seed}')
     if args.mask_group_config:
         print(f'Mask group config: {args.mask_group_config}')
@@ -352,8 +369,11 @@ def main():
 
         # ---- Pretrain ----
         # Lean models: batch_size=64, save_best (same setup as smart baseline)
+        uses_smart_baseline_budget = (
+            model == 'smart' or model in PMATCH_MODELS or model in _LEAN_MODELS
+        )
         cur_batch_size = 64 if model in _LEAN_MODELS else args.batch_size
-        cur_ft_epochs = 25 if model in _LEAN_MODELS else args.finetune_epochs
+        cur_ft_epochs = 25 if uses_smart_baseline_budget else args.finetune_epochs
         if args.eval_only:
             ft_ckpt = finetune_ckpt(args.export_root, dataset, model, seed)
             if not args.dry_run and not os.path.exists(ft_ckpt):
@@ -369,6 +389,18 @@ def main():
                 '--split-seed', str(args.split_seed),
                 '--eval-only',
             ] + los_ft_flags + use_film_flag + use_smile_film_flag + use_smile_v2_film_flag + use_smile_v2_flag + use_smile_lean_flag + use_smile_lean_samepretrain_flag + use_smile_flag + use_mnar_flag + smile_extra + arch_abl_extra + density_window_flag + pmatch_flag + smile_no_curriculum_flag
+            if args.eval_output_root:
+                eval_dir = os.path.join(
+                    args.eval_output_root, dataset, model, f'seed_{seed}')
+                cmd.extend(['--eval-output-dir', eval_dir])
+            if args.limit_test:
+                cmd.extend(['--limit-test', str(args.limit_test)])
+            if args.sensor_manifest:
+                cmd.extend(['--sensor-manifest', args.sensor_manifest])
+                cmd.extend(['--sensor-ks', *[str(value) for value in args.sensor_ks]])
+                cmd.extend(['--sensor-replicates', *[str(value) for value in args.sensor_replicates]])
+                if args.sensor_resume:
+                    cmd.append('--sensor-resume')
             ok = run_cmd(cmd, f'{tag_prefix} | EVALUATE', args.dry_run, env=launch_env)
             if not ok:
                 failed.append(f'{tag_prefix} evaluation')
@@ -383,7 +415,8 @@ def main():
                 # LoS/Decomp: save best (curriculum loss stays low); other non-lean: save last
                 # Lean models: save best (random masking; val loss is monotone-friendly)
                 save_last_flag = ([]
-                    if dataset in ('mimic_lengthofstay', 'mimic_decompensation') or model in _LEAN_MODELS
+                    if (dataset in ('mimic_lengthofstay', 'mimic_decompensation')
+                        or uses_smart_baseline_budget)
                     else ['--save-last'])
                 cmd = launch_prefix(args, idx) + [
                     'main_pretrain.py',

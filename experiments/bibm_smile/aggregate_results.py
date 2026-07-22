@@ -13,7 +13,7 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
-from statistics import mean, pstdev
+from statistics import mean, stdev
 
 
 HERE = Path(__file__).resolve().parent
@@ -98,7 +98,7 @@ def fmt_metric(values: list[float]) -> str:
         return "--"
     if len(values) == 1:
         return f"{values[0]:.2f}"
-    return f"{mean(values):.2f}\\sm{pstdev(values):.2f}"
+    return f"{mean(values):.2f}\\sm{stdev(values):.2f}"
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
@@ -125,7 +125,7 @@ def aggregate(rows: list[dict]) -> list[dict]:
             "metric": metric,
             "n": len(vals),
             "mean": mean(vals),
-        "std": pstdev(vals) if len(vals) > 1 else 0.0,
+            "std": stdev(vals) if len(vals) > 1 else 0.0,
             "formatted": fmt_metric(vals),
         })
     return out

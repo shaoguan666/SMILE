@@ -312,9 +312,9 @@ def load_matching_state(
 
 def load_dataset(dataset: str, split_seed: int, los_task: str, los_label_unit: str):
     if dataset == "c12":
-        return load_challenge_2012()
+        return load_challenge_2012(split_seed=split_seed)
     if dataset == "c19":
-        return load_challenge_2019()
+        return load_challenge_2019(split_seed=split_seed)
     if dataset == "mimic_mortality":
         return load_mimic_iii_mortality(split_seed=split_seed)
     if dataset == "mimic_phenotyping":

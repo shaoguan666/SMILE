@@ -29,9 +29,9 @@ def marker(p: float | None) -> str:
     if p is None or math.isnan(p):
         return ""
     if p < 0.01:
-        return "‡"
+        return "**"
     if p < 0.05:
-        return "†"
+        return "*"
     return ""
 
 
@@ -55,7 +55,13 @@ def main() -> int:
     parser.add_argument("--out-csv", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--full", default="SMILE-Full")
     parser.add_argument("--baseline", default="Backbone")
-    parser.add_argument("--capacity-control", default="Capacity-Control")
+    parser.add_argument("--capacity-control", default="Capacity ctrl")
+    parser.add_argument(
+        "--comparators",
+        nargs="+",
+        help="Variant display names to compare against --full. When omitted, "
+             "compare against --baseline and --capacity-control.",
+    )
     args = parser.parse_args()
 
     rows = [r for r in read_rows(args.long_csv) if r.get("status") == "ok"]
@@ -64,7 +70,8 @@ def main() -> int:
         key = (r["dataset"], r["metric"], r["variant_name"])
         data[key][int(r["seed"])] = float(r["value"])
 
-    comparisons = [(args.full, args.baseline), (args.full, args.capacity_control)]
+    comparators = args.comparators or [args.baseline, args.capacity_control]
+    comparisons = [(args.full, comparator) for comparator in dict.fromkeys(comparators)]
     out = []
     for dataset, metric, variant in sorted({(r["dataset"], r["metric"], r["variant_name"]) for r in rows}):
         if variant != args.full:

@@ -1690,7 +1690,7 @@ class SMILELeanEncoder(nn.Module):
       - MNARBiasFiLMVarAttBlock           -- MNAR bias + FiLM + time-dynamic MNAR scale
                                                using the original per-pair bias scale
       - DensityMLPEmbedder                -- density as 3rd input feature (not additive)
-      - TimeEncoder (dual-track PE)       -- physical time added to x after index PE
+      - TimeEncoder (dual-track PE)       -- learnable timestamp basis added after index PE
       - PositionalEncoding                -- sequence-index sinusoidal PE
 
     Ablation switches (via args):
@@ -1698,7 +1698,7 @@ class SMILELeanEncoder(nn.Module):
       - abl_no_mnar_bias:  disable MNAR co-occurrence attention bias
       - abl_no_film:       disable time-conditional FiLM on VarAtt
       - abl_no_time_mnar:  disable time-dynamic MNAR scaling only
-      - abl_no_time_pe:    disable physical-time positional encoding
+      - abl_no_time_pe:    disable the additive learnable timestamp encoding
     """
 
     def __init__(self, args):
@@ -1748,9 +1748,11 @@ class SMILELeanEncoder(nn.Module):
         self.query.data.normal_(mean=0.0, std=0.02)
         # Sinusoidal PE for sequence index
         self.position_enc = PositionalEncoding(args.d_model, n_position=args.max_len + 1)
-        # Learnable time encoder for FiLM conditioning AND dual-track physical-time PE
+        # Learnable time encoder for FiLM conditioning AND the additive time PE.
+        # Current public loaders provide elapsed hourly grid indices, so this is a
+        # learnable timestamp basis rather than access to raw irregular event times.
         self.time_encoder = TimeEncoder(self.time_dim)
-        # Project time_enc -> d_model for additive physical-time PE (zero-init)
+        # Project time_enc -> d_model for additive learnable time PE (zero-init)
         if not self.abl_no_time_pe:
             self.time_pe_proj = nn.Linear(self.time_dim, args.d_model)
             nn.init.zeros_(self.time_pe_proj.weight)
@@ -1846,7 +1848,7 @@ class SMILELeanEncoder(nn.Module):
             cls_time = torch.zeros(x.shape[0], 1, device=time.device, dtype=time.dtype)
             time_full = torch.cat([cls_time, time], dim=1)      # (B, T+1)
             time_enc = self.time_encoder(time_full)              # (B, T+1, time_dim)
-            #   2. physical-time PE (zero-init -> no contribution at init)
+            #   2. learnable elapsed-time PE (zero-init -> no contribution at init)
             if not self.abl_no_time_pe:
                 time_pe = self.time_pe_proj(time_enc).unsqueeze(1)  # (B, 1, T+1, d_model)
                 x = x + time_pe

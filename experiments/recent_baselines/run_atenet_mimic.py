@@ -28,9 +28,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.dataloader import collate_fn  # noqa: E402
+from data.challenge2012 import load_challenge_2012  # noqa: E402
+from data.challenge2019 import load_challenge_2019  # noqa: E402
 from data.mimiciii import (  # noqa: E402
     load_mimic_iii_decompensation,
     load_mimic_iii_mortality,
+)
+from experiments.recent_baselines.baseline_utils import (  # noqa: E402
+    add_sensor_robustness_args,
+    binary_prediction_arrays,
+    maybe_run_sensor_grid,
 )
 
 
@@ -51,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dataset",
-        choices=("mimic_mortality", "mimic_decompensation"),
+        choices=("mimic_mortality", "mimic_decompensation", "c12", "c19"),
         required=True,
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -76,6 +83,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=ROOT / "export" / "recent_baselines",
     )
+    parser.add_argument("--eval-only", action="store_true",
+                        help="Skip training; load best_auprc.pt and evaluate only.")
+    parser.add_argument("--eval-output-dir", type=Path, default=None,
+                        help="Write eval result here instead of the checkpoint dir.")
+    add_sensor_robustness_args(parser)
     return parser.parse_args()
 
 
@@ -124,7 +136,7 @@ def prepare_batch(batch: dict[str, torch.Tensor], device: torch.device):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device: torch.device) -> dict[str, float]:
+def evaluate(model, loader, device: torch.device, *, return_predictions=False):
     model.eval()
     labels_all: list[np.ndarray] = []
     scores_all: list[np.ndarray] = []
@@ -136,6 +148,8 @@ def evaluate(model, loader, device: torch.device) -> dict[str, float]:
         scores_all.append(scores.cpu().numpy())
     labels_np = np.concatenate(labels_all)
     scores_np = np.concatenate(scores_all)
+    if return_predictions:
+        return binary_prediction_arrays([labels_np], [scores_np])
     return {
         "auroc": float(roc_auc_score(labels_np, scores_np)),
         "auprc": float(average_precision_score(labels_np, scores_np)),
@@ -163,6 +177,8 @@ def main() -> None:
     loader_fn = {
         "mimic_mortality": load_mimic_iii_mortality,
         "mimic_decompensation": load_mimic_iii_decompensation,
+        "c12": load_challenge_2012,
+        "c19": load_challenge_2019,
     }[args.dataset]
     train_ds, val_ds, test_ds = loader_fn(split_seed=args.split_seed)
     train_ds = maybe_limit(train_ds, args.limit_train)
@@ -203,7 +219,9 @@ def main() -> None:
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.1, patience=2
     )
-    scaler = torch.amp.GradScaler("cuda", enabled=args.amp)
+    # torch.amp.GradScaler was introduced after the target server's PyTorch.
+    # The CUDA namespace works on both the older and current supported builds.
+    scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
 
     output_dir = args.output_root / args.dataset / "atenet" / f"seed_{args.seed}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -212,7 +230,7 @@ def main() -> None:
     stale_epochs = 0
     history: list[dict[str, float]] = []
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, (0 if args.eval_only else args.epochs) + 1):
         model.train()
         loss_sum = 0.0
         seen = 0
@@ -220,7 +238,7 @@ def main() -> None:
         for batch in train_loader:
             model_input, time, labels = prepare_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast("cuda", enabled=args.amp):
+            with torch.cuda.amp.autocast(enabled=args.amp):
                 out, out_masked, logits, sx, sout, _ = model(model_input, time, None)
                 classification = criterion(logits, labels)
                 temporal = atenet_utils.temporal_contrastive_loss(out, out_masked)
@@ -230,7 +248,7 @@ def main() -> None:
             # BCELoss is intentionally excluded from autocast by PyTorch because
             # its fp16 backward pass can overflow. Keep this small auxiliary
             # objective in fp32 while retaining AMP for the encoder.
-            with torch.amp.autocast("cuda", enabled=False):
+            with torch.cuda.amp.autocast(enabled=False):
                 intervariable = bce_criterion(sout.float(), sx.float())
             loss = classification + args.alpha * consistency + args.beta * intervariable
             if not torch.isfinite(loss):
@@ -268,6 +286,20 @@ def main() -> None:
                 break
 
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+    if maybe_run_sensor_grid(
+        args,
+        evaluator=lambda loader: evaluate(
+            model, loader, device, return_predictions=True
+        ),
+        test_dataset=test_ds,
+        base_collate=collate_fn,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        output_dir=output_dir,
+        model_name="atenet",
+        checkpoint_path=checkpoint_path,
+    ):
+        return
     test_metrics = evaluate(model, test_loader, device)
     result = {
         "model": "ATENet",
@@ -286,7 +318,9 @@ def main() -> None:
         "history": history,
         "config": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
     }
-    with (output_dir / "eval_results.json").open("w", encoding="utf-8") as handle:
+    result_dir = args.eval_output_dir or output_dir
+    result_dir.mkdir(parents=True, exist_ok=True)
+    with (result_dir / "eval_results.json").open("w", encoding="utf-8") as handle:
         json.dump(result, handle, indent=2)
     print(json.dumps(result["test"], indent=2), flush=True)
 

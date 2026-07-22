@@ -1,0 +1,55 @@
+{
+  "source": "Refreshed from sensor grid k=0 clean values after retraining smile+smart (mortality) + ists, 2026-07-21",
+  "mimic_mortality": {
+    "smart-smile-lean": {
+      "auprc_mean": 50.15,
+      "auprc_sample_std": 0.4
+    },
+    "smart": {
+      "auprc_mean": 50.99,
+      "auprc_sample_std": 1.23
+    },
+    "ists_plm": {
+      "auprc_mean": 47.64,
+      "auprc_sample_std": 1.74
+    },
+    "wavegnn": {
+      "auprc_mean": 49.22,
+      "auprc_sample_std": 0.21
+    },
+    "misstm": {
+      "auprc_mean": 43.34,
+      "auprc_sample_std": 2.02
+    },
+    "atenet": {
+      "auprc_mean": 49.69,
+      "auprc_sample_std": 1.15
+    }
+  },
+  "mimic_decompensation": {
+    "smart-smile-lean": {
+      "auprc_mean": 78.65,
+      "auprc_sample_std": 0.62
+    },
+    "smart": {
+      "auprc_mean": 76.7,
+      "auprc_sample_std": 0.3
+    },
+    "ists_plm": {
+      "auprc_mean": 73.59,
+      "auprc_sample_std": 1.0
+    },
+    "wavegnn": {
+      "auprc_mean": 72.19,
+      "auprc_sample_std": 0.75
+    },
+    "misstm": {
+      "auprc_mean": 63.05,
+      "auprc_sample_std": 2.52
+    },
+    "atenet": {
+      "auprc_mean": 50.68,
+      "auprc_sample_std": 0.83
+    }
+  }
+}

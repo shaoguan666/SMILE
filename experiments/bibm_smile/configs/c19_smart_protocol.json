@@ -1,0 +1,26 @@
+{
+  "seeds": [1, 42, 3407],
+  "datasets": ["c19"],
+  "implemented_variants": {
+    "Backbone": "smart",
+    "SMILE-Full": "smart-smile-lean",
+    "SMILE w/o Density": "smart-smile-lean-no-density",
+    "SMILE w/o CoMiss Bias": "smart-smile-lean-no-mnar-bias",
+    "SMILE w/o Time-Affine": "smart-smile-lean-no-film",
+    "SMILE w/o Curriculum": "smart-smile-lean-norandom",
+    "Capacity ctrl": "smart-pmatch",
+    "SMILE w/o T-MNAR": "smart-smile-lean-no-time-mnar",
+    "SMILE w/o T-PE": "smart-smile-lean-no-time-pe",
+    "SMILE w/o CoMiss+T-MNAR": "smart-smile-lean-no-mnar-bias"
+  },
+  "protocol": {
+    "name": "smart_patient60_final_label_v1",
+    "split": "80/10/10 patient split reshuffled by run seed",
+    "normalization": "SMART-compatible global observed-value z-score",
+    "loss": "unweighted cross-entropy",
+    "selection": "validation AUPRC",
+    "pretrain_epochs": 25,
+    "finetune_epochs": 25,
+    "effective_global_batch_size": 64
+  }
+}

@@ -1063,6 +1063,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seed for loader-compatible shuffled splits without stored indices (default: 42)",
     )
     parser.add_argument(
+        "--tasks",
+        nargs="+",
+        choices=tuple(TASKS),
+        default=None,
+        help="Optional task subset. Use '--tasks c19' to build a seed-specific "
+             "C19 mask-group contract without auditing unrelated datasets.",
+    )
+    parser.add_argument(
         "--no-plot",
         action="store_true",
         help="Do not generate per-task or main-paper summary figures",
@@ -1085,7 +1093,9 @@ def main(argv: list[str] | None = None) -> int:
     summaries = []
     selections: dict[str, Any] = {}
     figure_payloads: dict[str, dict[str, Any]] = {}
-    for task, config in TASKS.items():
+    requested_tasks = args.tasks or list(TASKS)
+    for task in requested_tasks:
+        config = TASKS[task]
         if not os.path.exists(config["path"]):
             raise FileNotFoundError("Dataset pickle not found for %s: %s" % (task, config["path"]))
         summary, selection, figure_payload = run_task(
@@ -1117,7 +1127,9 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(selection_contract, handle, indent=2, ensure_ascii=True, allow_nan=False)
         handle.write("\n")
     figure_paths = None
-    if not args.no_plot:
+    # The combined paper figure has a fixed multi-task panel contract. A task
+    # subset may still emit its per-task plots, but cannot build that summary.
+    if not args.no_plot and args.tasks is None:
         figure_paths = plot_main_paper_figure2(
             figure_payloads,
             selections,
